@@ -22,11 +22,17 @@
   <img alt="Zapret Hub banner" src="assets/banner-dark.png">
 </picture>
 
-<p align="center">
-  <a href="https://github.com/goshkow/Zapret-Hub/releases/latest">
-    <img src="https://img.shields.io/badge/-Скачать%20Zapret%20Hub-6f42c1?style=for-the-badge&logo=windows&logoColor=white" alt="Скачать последнюю версию">
-  </a>
-</p>
+<div align="center">
+
+<a href="https://github.com/goshkow/Zapret-Hub/releases/latest">
+  <img src="https://img.shields.io/badge/Скачать-последнюю%20версию-blue?style=for-the-badge&logo=github" alt="Скачать последнюю версию">
+</a>
+<br><br>
+<img src="https://img.shields.io/github/downloads/goshkow/Zapret-Hub/total?style=for-the-badge&label=%D0%97%D0%B0%D0%B3%D1%80%D1%83%D0%B7%D0%BE%D0%BA" alt="Всего загрузок">
+<img src="https://img.shields.io/github/stars/goshkow/Zapret-Hub?style=for-the-badge&label=%D0%97%D0%B2%D1%91%D0%B7%D0%B4" alt="Звёзды">
+<img src="https://img.shields.io/github/v/release/goshkow/Zapret-Hub?style=for-the-badge&label=%D0%92%D0%B5%D1%80%D1%81%D0%B8%D1%8F" alt="Последняя версия">
+
+</div>
 
 <p align="center">
   <a href="https://github.com/goshkow/Zapret-Hub/blob/main/donations.md#-%D0%BF%D0%BE%D0%B4%D0%B4%D0%B5%D1%80%D0%B6%D0%B0%D1%82%D1%8C-%D0%BF%D1%80%D0%BE%D0%B5%D0%BA%D1%82">
@@ -80,7 +86,7 @@
 
 В разделе можно:  
 🔹 Изменить `general` Zapret  
-🔹 Подключить TG-WS-Proxy к Telegram
+🔹 Подключить TG-WS-Proxy к Telegram  
 🔹 Скачать последнюю версию Telegram Desktop  
 🔹 Обновить любой из компонентов  
 🔹 Включить/Отключить любой из компонентов  
@@ -224,3 +230,22 @@ python -m zapret_hub.main
 >    IPv4:	`8.8.8.8` и доп: `8.8.4.4`  
 >    IPv6:	`2001:4860:4860::8888` и доп: `2001:4860:4860::8844`  
 >    Запасной вариант - IPv4: `77.88.8.1` и доп: `1.1.1.1`
+
+<p align="left">
+  <a href="https://star-history.com/#goshkow/Zapret-Hub&Date">
+    <picture>
+      <source
+        media="(prefers-color-scheme: dark)"
+        srcset="https://api.star-history.com/svg?repos=goshkow/Zapret-Hub&type=Date&theme=dark"
+      />
+      <source
+        media="(prefers-color-scheme: light)"
+        srcset="https://api.star-history.com/svg?repos=goshkow/Zapret-Hub&type=Date"
+      />
+      <img
+        alt="Star History Chart"
+        src="https://api.star-history.com/svg?repos=goshkow/Zapret-Hub&type=Date"
+      />
+    </picture>
+  </a>
+</p>
