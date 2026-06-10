@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import shutil
@@ -23,7 +23,7 @@ def _should_skip_path(path: Path, source_dir: Path) -> bool:
     return False
 
 
-def _zip_with_root(source_dir: Path, zip_path: Path, root_name: str = "zapret_hub") -> None:
+def _zip_with_root(source_dir: Path, zip_path: Path, root_name: str = "zapret_zen") -> None:
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     if zip_path.exists():
         zip_path.unlink()
@@ -72,8 +72,8 @@ def main() -> None:
     _zip_with_root(arm64_source, payload_dir / "win_arm64.zip")
 
     release_dir.mkdir(parents=True, exist_ok=True)
-    portable_x64_dir = release_dir / f"zapret_hub_{version}_portable_win_x64"
-    portable_arm64_dir = release_dir / f"zapret_hub_{version}_portable_win_arm64"
+    portable_x64_dir = release_dir / f"zapret_zen_{version}_portable_win_x64"
+    portable_arm64_dir = release_dir / f"zapret_zen_{version}_portable_win_arm64"
 
     if portable_x64_dir.exists():
         shutil.rmtree(portable_x64_dir, ignore_errors=True)
@@ -88,8 +88,8 @@ def main() -> None:
     for backup_dir in portable_arm64_dir.rglob("tg-ws-proxy.bak.*"):
         if backup_dir.is_dir():
             shutil.rmtree(backup_dir, ignore_errors=True)
-    _zip_with_root(portable_x64_dir, release_dir / f"zapret_hub_{version}_portable_win_x64.zip")
-    _zip_with_root(portable_arm64_dir, release_dir / f"zapret_hub_{version}_portable_win_arm64.zip")
+    _zip_with_root(portable_x64_dir, release_dir / f"zapret_zen_{version}_portable_win_x64.zip")
+    _zip_with_root(portable_arm64_dir, release_dir / f"zapret_zen_{version}_portable_win_arm64.zip")
 
     note = release_dir / "README_RELEASE.txt"
     note.write_text(

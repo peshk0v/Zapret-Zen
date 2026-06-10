@@ -1,4 +1,4 @@
-name: CI Build
+﻿name: CI Build
 
 on:
   push:
@@ -40,12 +40,12 @@ jobs:
 
       - name: SignPath placeholder
         shell: pwsh
-        run: .\scripts\signpath_stub.ps1 -InputPath ".\dist_nuitka\main.dist\zapret_hub.exe"
+        run: .\scripts\signpath_stub.ps1 -InputPath ".\dist_nuitka\main.dist\zapret_zen.exe"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: zapret-hub-ci-windows
+          name: zapret-zen-ci-windows
           path: |
             dist_nuitka/main.dist/**
           if-no-files-found: error

@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Python = ".\.venv\Scripts\python.exe",
     [string]$PayloadDir = "installer_payload",
     [string]$OutputDir = "dist_installer",
@@ -42,17 +42,17 @@ if (-not $SkipPrepareRelease) {
   --windows-console-mode=disable `
   --windows-uac-admin `
   --windows-icon-from-ico=ui_assets\icons\app_shell.ico `
-  --company-name="goshkow" `
-  --product-name="Zapret Hub Installer" `
+  --company-name="peshk0v" `
+  --product-name="Zapret-Zen Installer" `
   --file-version="2.0.0.0" `
   --product-version="2.0.0.0" `
-  --file-description="Zapret Hub Installer" `
-  --copyright="goshkow" `
+  --file-description="Zapret-Zen Installer" `
+  --copyright="peshk0v" `
   --output-dir=$OutputDir `
-  --output-filename="install_zaprethub_2.0.0_universal.exe" `
+  --output-filename="install_zapretzen_2.0.0_universal.exe" `
   --include-data-dir=$PayloadDir=installer_payload `
   --include-data-dir=ui_assets=ui_assets `
   --nofollow-import-to=tkinter `
   --remove-output `
-  installer\install_zaprethub.py
+  installer\install_zapretzen.py
 if ($LASTEXITCODE -ne 0) { throw "Nuitka installer build failed with exit code $LASTEXITCODE" }

@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Python = ".\.venv\Scripts\python.exe",
     [string]$OutputDir = "dist_nuitka",
     [ValidateSet("zig", "msvc", "mingw")]
@@ -50,11 +50,11 @@ foreach ($pattern in $excludeFilePatterns) {
 }
 
 # Runtime-конфигурация содержит пользовательскую подписку и создаётся заново при запуске.
-$vpnGeneratedConfig = Join-Path $runtimeStage "v2rayN\goshkow-vpn"
+$vpnGeneratedConfig = Join-Path $runtimeStage "v2rayN\peshk0v-vpn"
 if (Test-Path $vpnGeneratedConfig) {
     Remove-Item $vpnGeneratedConfig -Recurse -Force
 }
-$vpnSubscriptionHint = Join-Path $runtimeStage "v2rayN\goshkow-vpn-subscription.txt"
+$vpnSubscriptionHint = Join-Path $runtimeStage "v2rayN\peshk0v-vpn-subscription.txt"
 if (Test-Path $vpnSubscriptionHint) {
     Remove-Item $vpnSubscriptionHint -Force
 }
@@ -67,14 +67,14 @@ $nuitkaArgs = @(
   "--enable-plugin=pyside6",
   "--windows-console-mode=disable",
   "--windows-icon-from-ico=ui_assets\icons\app_shell.ico",
-  '--company-name=goshkow',
-  '--product-name=Zapret Hub',
+  '--company-name=peshk0v',
+  '--product-name=Zapret-Zen',
   '--file-version=2.0.0.0',
   '--product-version=2.0.0.0',
-  '--file-description=Zapret Hub',
-  '--copyright=goshkow',
+  '--file-description=Zapret-Zen',
+  '--copyright=peshk0v',
   "--output-dir=$OutputDir",
-  "--output-filename=zapret_hub.exe",
+  "--output-filename=zapret_zen.exe",
   "--include-data-dir=sample_data=sample_data",
   "--include-data-dir=ui_assets=ui_assets",
   "--include-package=cryptography",
@@ -82,7 +82,7 @@ $nuitkaArgs = @(
   "--include-package-data=certifi",
   "--nofollow-import-to=tkinter",
   "--remove-output",
-  "src\zapret_hub\main.py"
+  "src\zapret_zen\main.py"
 )
 
 if ($Compiler -eq "zig") {

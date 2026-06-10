@@ -1,4 +1,4 @@
-name: Release Build
+﻿name: Release Build
 
 on:
   push:
@@ -13,7 +13,7 @@ on:
       release_name:
         description: "Release title"
         required: true
-        default: "Zapret Hub 2.0.0"
+        default: "Zapret-Zen 2.0.0"
       changelog:
         description: "Release changelog"
         required: false
@@ -171,7 +171,7 @@ jobs:
           $version = $tag.TrimStart("v")
           $name = "${{ inputs.release_name }}"
           if (-not $name) {
-            $name = "Zapret Hub $version"
+            $name = "Zapret-Zen $version"
           }
           "tag=$tag" >> $env:GITHUB_OUTPUT
           "version=$version" >> $env:GITHUB_OUTPUT
@@ -196,11 +196,11 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ steps.release_meta.outputs.version }}"
-          Copy-Item ".\dist_installer\install_zaprethub_${version}_universal.exe" ".\release_$version\" -Force
+          Copy-Item ".\dist_installer\install_zapretzen_${version}_universal.exe" ".\release_$version\" -Force
 
       - name: SignPath placeholder
         shell: pwsh
-        run: .\scripts\signpath_stub.ps1 -InputPath ".\.artifacts\win_x64\zapret_hub.exe"
+        run: .\scripts\signpath_stub.ps1 -InputPath ".\.artifacts\win_x64\zapret_zen.exe"
 
       - name: Read release notes
         id: release_notes
@@ -213,9 +213,9 @@ jobs:
           } else {
             $body = "${{ inputs.changelog }}"
           }
-          "body<<__ZAPRET_HUB_NOTES__" >> $env:GITHUB_OUTPUT
+          "body<<__zapret_zen_NOTES__" >> $env:GITHUB_OUTPUT
           $body >> $env:GITHUB_OUTPUT
-          "__ZAPRET_HUB_NOTES__" >> $env:GITHUB_OUTPUT
+          "__zapret_zen_NOTES__" >> $env:GITHUB_OUTPUT
 
       - name: Create release
         uses: softprops/action-gh-release@v2
@@ -224,5 +224,5 @@ jobs:
           name: ${{ steps.release_meta.outputs.name }}
           body: ${{ steps.release_notes.outputs.body }}
           files: |
-            release_${{ steps.release_meta.outputs.version }}/install_zaprethub_${{ steps.release_meta.outputs.version }}_universal.exe
+            release_${{ steps.release_meta.outputs.version }}/install_zapretzen_${{ steps.release_meta.outputs.version }}_universal.exe
             release_${{ steps.release_meta.outputs.version }}/*portable*.zip

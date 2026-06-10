@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "zapret-hub"
+name = "zapret-zen"
 version = "2.0.0"
 description = "Windows desktop hub for managing external network utilities and configuration packs."
 readme = "README.md"
@@ -23,7 +23,7 @@ dev = [
 ]
 
 [project.scripts]
-zapret-hub = "zapret_hub.main:main"
+zapret-zen = "zapret_zen.main:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

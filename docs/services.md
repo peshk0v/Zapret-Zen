@@ -1,16 +1,16 @@
-# Сервисы в Zapret Hub
+﻿# Сервисы в Zapret-Zen
 
-Этот документ описывает, как устроены сервисы в Zapret Hub, как они применяются к активному runtime и как добавить новый сервис без долгого изучения внутренностей проекта.
+Этот документ описывает, как устроены сервисы в Zapret-Zen, как они применяются к активному runtime и как добавить новый сервис без долгого изучения внутренностей проекта.
 
 ## Коротко
 
 Сервисы состоят из нескольких частей:
 
-- `src/zapret_hub/services/service_catalog.py`
+- `src/zapret_zen/services/service_catalog.py`
   Здесь хранится то, что видит пользователь в интерфейсе: `id`, названия, описания, иконка, акцентный цвет.
-- `src/zapret_hub/services/service_rules.py`
+- `src/zapret_zen/services/service_rules.py`
   Здесь хранится фактическая логика сервиса: домены, IP/CIDR, `hosts`, дополнительные списки, тестовые цели, дополнительные аргументы `winws`.
-- `src/zapret_hub/services/components.py`
+- `src/zapret_zen/services/components.py`
   Здесь сервисы встраиваются в активный runtime Zapret во время merge.
 - `ui_assets/service_icons/<service>.svg`
   Иконка сервиса для онбординга и страницы сервисов.

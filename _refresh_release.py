@@ -7,7 +7,7 @@ from scripts.prepare_nuitka_release import main as prepare_nuitka_release_main
 
 
 ROOT = Path(__file__).resolve().parent
-INSTALLER_SRC = ROOT / "dist_installer" / "install_zaprethub_1.4.2_universal.exe"
+INSTALLER_SRC = ROOT / "dist_installer" / "install_zapretzen_1.4.2_universal.exe"
 RELEASE_DIR = ROOT / "release_1.4.2"
 
 
