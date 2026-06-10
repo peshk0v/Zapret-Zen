@@ -7209,7 +7209,9 @@ class MainWindow(QMainWindow):
         task_id = str(message.get("id", ""))
         action = str(message.get("action", ""))
         action_id = self._backend_tasks.pop(task_id, action)
-        error = str(message.get("error", self._t("Неизвестная ошибка.", "Unknown error.")))
+        source = self._backend_error_source(action, str(message.get("source", "") or ""))
+        raw_error = str(message.get("error", self._t("Неизвестная ошибка.", "Unknown error.")))
+        error = self._friendly_backend_error(raw_error, source=source, action=action)
         if action == "load_startup_snapshot":
             self.context.logging.log("error", "startup_snapshot_failed", error=error)
             self._ensure_local_runtime_snapshot()
@@ -7260,14 +7262,61 @@ class MainWindow(QMainWindow):
             self._settings_diag_progress_bar = None
         if action in {"update_zapret_runtime", "update_tg_ws_proxy_runtime"}:
             self._close_component_update_dialog()
+        title = self._backend_error_title(source)
         self._add_notification(
             "error",
-            self._t("Ошибка операции", "Operation failed"),
+            title,
             error,
-            source=action or "backend",
-            details={"dedupe_key": f"backend-error:{action}:{error}"},
+            source=source,
+            details={"dedupe_key": f"backend-error:{source}:{action}:{error}"},
         )
-        self._show_error("Zapret Hub", error)
+        self._show_error(title, error)
+
+    def _backend_error_source(self, action: str, fallback: str = "") -> str:
+        source = (fallback or "").strip().lower()
+        if source:
+            return source
+        normalized = (action or "").strip().lower()
+        if "tg_ws_proxy" in normalized or "tg-ws-proxy" in normalized or "telegram" in normalized:
+            return "tg-ws-proxy"
+        if "goshkow_vpn" in normalized or "goshkow-vpn" in normalized or "vpn" in normalized:
+            return "goshkow-vpn"
+        if "zapret" in normalized or "general" in normalized or "merge" in normalized:
+            return "zapret"
+        if "mod" in normalized:
+            return "mods"
+        if "settings" in normalized:
+            return "settings"
+        if "file" in normalized:
+            return "files"
+        return "backend"
+
+    def _backend_error_title(self, source: str) -> str:
+        label = self._backend_source_label(source)
+        return self._t(f"Ошибка {label}", f"{label} error")
+
+    def _backend_source_label(self, source: str) -> str:
+        labels = {
+            "tg-ws-proxy": "TG WS Proxy",
+            "goshkow-vpn": "goshkow vpn",
+            "zapret": "Zapret",
+            "mods": self._t("Модификации", "Mods"),
+            "settings": self._t("Настройки", "Settings"),
+            "files": self._t("Файлы", "Files"),
+            "backend": "Backend",
+        }
+        return labels.get((source or "").strip().lower(), "Backend")
+
+    def _friendly_backend_error(self, error: str, *, source: str, action: str = "") -> str:
+        text = str(error or "").strip() or self._t("Неизвестная ошибка.", "Unknown error.")
+        lowered = text.lower()
+        if "expecting value" in lowered and "line 1 column 1" in lowered:
+            source_label = self._backend_source_label(source)
+            return self._t(
+                f"{source_label}: получен пустой или повреждённый JSON-ответ. Приложение уже защитило локальные данные, повторите действие. Если ошибка повторится, откройте логи - там будет указан backend action: {action or 'unknown'}.",
+                f"{source_label}: an empty or corrupted JSON response was received. Local data is protected; try again. If it repeats, open logs - backend action is: {action or 'unknown'}.",
+            )
+        return text
 
     def _finish_settings_vpn_refresh(self, *, success: bool) -> None:
         dialog = self._settings_dialog
@@ -11863,7 +11912,17 @@ class MainWindow(QMainWindow):
         self._show_info(title, text)
 
     def _show_error(self, title: str, text: str) -> None:
-        self._show_info(title, text)
+        self._show_info(title, self._friendly_ui_error_text(text))
+
+    def _friendly_ui_error_text(self, text: str) -> str:
+        message = str(text or "").strip()
+        lowered = message.lower()
+        if "expecting value" in lowered and "line 1 column 1" in lowered:
+            return self._t(
+                "Получен пустой или повреждённый JSON-ответ. Локальные данные защищены, повторите действие. Если ошибка повторится, откройте логи - там будет указан источник операции.",
+                "An empty or corrupted JSON response was received. Local data is protected; try again. If it repeats, open logs - the operation source will be listed there.",
+            )
+        return message
 
     def _ask_text_value(self, title: str, text: str, placeholder: str = "") -> str:
         dialog = AppDialog(self, self.context, title)

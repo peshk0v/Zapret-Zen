@@ -10,6 +10,7 @@ import shlex
 import socket
 import subprocess
 import sys
+import threading
 import time
 import webbrowser
 import shutil
@@ -157,6 +158,7 @@ class ProcessManager:
         self.logging = logging
         self.settings = settings
         self._processes: dict[str, subprocess.Popen[Any]] = {}
+        self._process_lock = threading.RLock()
         self._states: dict[str, ComponentState] = {}
         self._current_zapret_runtime: Path | None = None
         self._state_cache: list[ComponentState] = []
@@ -292,6 +294,10 @@ class ProcessManager:
         self._state_cache_at = 0.0
 
     def start_component(self, component_id: str) -> ComponentState:
+        with self._process_lock:
+            return self._start_component_unlocked(component_id)
+
+    def _start_component_unlocked(self, component_id: str) -> ComponentState:
         component = next(item for item in self.list_components() if item.id == component_id)
         if component.id == "zapret":
             self.stop_component("goshkow-vpn")
@@ -326,6 +332,10 @@ class ProcessManager:
         return state
 
     def stop_component(self, component_id: str) -> ComponentState:
+        with self._process_lock:
+            return self._stop_component_unlocked(component_id)
+
+    def _stop_component_unlocked(self, component_id: str) -> ComponentState:
         state = self._states.get(component_id, ComponentState(component_id=component_id))
 
         if component_id == "zapret":
@@ -352,8 +362,13 @@ class ProcessManager:
                     process.wait(timeout=4)
                 except subprocess.TimeoutExpired:
                     process.kill()
+                    try:
+                        process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        pass
             if process and process.pid:
                 self._run_quiet(["taskkill", "/PID", str(process.pid), "/F"])
+            self._processes.pop(component_id, None)
             self._kill_image("TgWsProxy_windows.exe")
             self._close_source_log_stream("tg-ws-proxy")
             state.status = "stopped"
@@ -370,8 +385,13 @@ class ProcessManager:
                     process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     process.kill()
+                    try:
+                        process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        pass
             if process and process.pid:
                 self._run_quiet(["taskkill", "/PID", str(process.pid), "/F", "/T"])
+            self._processes.pop(component_id, None)
             self._close_source_log_stream(component_id)
             state.status = "stopped"
             state.pid = None
@@ -387,6 +407,11 @@ class ProcessManager:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 process.kill()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    pass
+        self._processes.pop(component_id, None)
         state.status = "stopped"
         state.pid = None
         self._states[component_id] = state
@@ -667,9 +692,7 @@ class ProcessManager:
 
     def _download_latest_v2rayn_archive(self) -> Path:
         api_url = "https://api.github.com/repos/2dust/v2rayN/releases/latest"
-        request = urllib.request.Request(api_url, headers={"User-Agent": "Zapret-Hub/2.0"})
-        with urllib.request.urlopen(request, timeout=20) as response:
-            release = json.loads(response.read().decode("utf-8", errors="ignore"))
+        release = self.github.github_json(api_url, timeout=20, purpose="v2rayn-release-metadata")
         assets = release.get("assets", []) if isinstance(release, dict) else []
         selected_url = ""
         selected_name = ""

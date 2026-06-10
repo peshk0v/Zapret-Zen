@@ -140,6 +140,8 @@ def fetch_latest_release(
             code = getattr(resp, "status", None) or resp.getcode()
             new_etag = resp.headers.get("ETag")
             raw = resp.read().decode("utf-8", errors="replace")
+            if not raw.strip():
+                raise ValueError("GitHub вернул пустой ответ при проверке обновления TG WS Proxy.")
             return json.loads(raw), new_etag, int(code)
     except HTTPError as e:
         if e.code == 304:

@@ -4,6 +4,7 @@ import multiprocessing as mp
 import os
 import queue
 import tempfile
+import traceback
 import uuid
 from dataclasses import asdict
 from pathlib import Path
@@ -325,7 +326,42 @@ def _worker_main(task_queue, result_queue) -> None:
             result = _run_action(context, action, payload, lambda progress: _emit_progress(task_id, action, progress))
             result_queue.put({"id": task_id, "action": action, "ok": True, "payload": result or {}})
         except Exception as error:
-            result_queue.put({"id": task_id, "action": action, "ok": False, "error": str(error)})
+            try:
+                context.logging.log(
+                    "error",
+                    "Backend task failed",
+                    action=action,
+                    error=str(error),
+                    traceback=traceback.format_exc(),
+                )
+            except Exception:
+                pass
+            result_queue.put(
+                {
+                    "id": task_id,
+                    "action": action,
+                    "ok": False,
+                    "error": str(error),
+                    "source": _action_error_source(action),
+                }
+            )
+
+
+def _action_error_source(action: str) -> str:
+    normalized = (action or "").strip().lower()
+    if "tg_ws_proxy" in normalized or "tg-ws-proxy" in normalized or "telegram" in normalized:
+        return "tg-ws-proxy"
+    if "goshkow_vpn" in normalized or "goshkow-vpn" in normalized or "vpn" in normalized:
+        return "goshkow-vpn"
+    if "zapret" in normalized or "general" in normalized or "merge" in normalized:
+        return "zapret"
+    if "mod" in normalized:
+        return "mods"
+    if "settings" in normalized:
+        return "settings"
+    if "file" in normalized:
+        return "files"
+    return "backend"
 
 
 def _run_action(context, action: str, payload: dict[str, Any], emit_progress: callable | None = None) -> dict[str, Any]:
