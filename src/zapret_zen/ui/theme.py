@@ -1,14 +1,168 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+from typing import Any
+
+from zapret_zen.domain.models import ThemeDefinition
+
 
 LIGHT_THEMES = {"light", "light blue"}
 
+_THEME_REGISTRY: dict[str, ThemeDefinition] = {}
+
+
+def _compute_builtin_themes() -> dict[str, ThemeDefinition]:
+    night_css, light_css = _build_base_css()
+    dark_css = _compute_dark(night_css)
+    oled_css = _compute_oled(dark_css)
+    light_blue_css = _compute_light_blue(light_css)
+    return {
+        "light": ThemeDefinition(id="light", name={"ru": "Светлая", "en": "Light"}, is_light=True, stylesheet=light_css),
+        "light blue": ThemeDefinition(id="light blue", name={"ru": "Светло-синяя", "en": "Light Blue"}, is_light=True, stylesheet=light_blue_css),
+        "night": ThemeDefinition(id="night", name={"ru": "Ночная", "en": "Night"}, is_light=False, stylesheet=night_css),
+        "dark": ThemeDefinition(id="dark", name={"ru": "Тёмно-серая", "en": "Dark Gray"}, is_light=False, stylesheet=dark_css),
+        "oled": ThemeDefinition(id="oled", name={"ru": "Тёмная", "en": "Dark"}, is_light=False, stylesheet=oled_css),
+    }
+
+
+def _normalize_theme(css: str, is_light: bool) -> str:
+    import re
+    builtins = _compute_builtin_themes()
+    base_id = "light" if is_light else "dark"
+    base = builtins.get(base_id)
+    if base is None:
+        return css
+
+    base_css = base.stylesheet
+    base_blocks = _extract_blocks(base_css)
+    theme_blocks = _extract_blocks(css)
+
+    missing = {s for s in base_blocks if s not in theme_blocks}
+    if not missing:
+        return css
+
+    color_map: dict[str, str] = {}
+    for sel in sorted(set(theme_blocks) & set(base_blocks)):
+        t_colors = re.findall(r'#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?', theme_blocks[sel])
+        b_colors = re.findall(r'#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?', base_blocks[sel])
+        if len(t_colors) == len(b_colors):
+            for tc, bc in zip(t_colors, b_colors):
+                if bc not in color_map:
+                    color_map[bc] = tc
+
+    missing_parts: list[str] = []
+    for sel in sorted(missing):
+        block = base_blocks[sel]
+        result = block
+        for bc, tc in sorted(color_map.items(), key=lambda x: -len(x[0])):
+            result = result.replace(bc, tc)
+        missing_parts.append(result)
+
+    return css.rstrip() + "\n" + "\n".join(missing_parts)
+
+
+def _extract_blocks(css: str) -> dict[str, str]:
+    lines = css.splitlines()
+    i = 0
+    result: dict[str, str] = {}
+    while i < len(lines):
+        stripped = lines[i].strip()
+        if stripped and not stripped.startswith("/*") and stripped.endswith("{"):
+            sel = stripped.rstrip(" {").strip()
+            depth = 1
+            block = [lines[i]]
+            i += 1
+            while i < len(lines) and depth > 0:
+                block.append(lines[i])
+                depth += lines[i].count("{") - lines[i].count("}")
+                i += 1
+            result[sel] = "\n".join(block)
+        else:
+            i += 1
+    return result
+
+
+def load_theme_registry(themes_dir: Path | str | None) -> None:
+    global _THEME_REGISTRY
+    _THEME_REGISTRY.clear()
+    td = Path(themes_dir) if themes_dir else None
+    if td is not None and td.is_dir():
+        for json_path in sorted(td.glob("*.json")):
+            try:
+                data = json.loads(json_path.read_text(encoding="utf-8"))
+                tid = str(data.get("id", "") or "")
+                if tid:
+                    is_light = bool(data.get("is_light", False))
+                    css = str(data.get("stylesheet", "") or "")
+                    _THEME_REGISTRY[tid] = ThemeDefinition(
+                        id=tid,
+                        name=data.get("name", {}),
+                        is_light=is_light,
+                        stylesheet=_normalize_theme(css, is_light),
+                    )
+            except Exception:
+                continue
+    if not _THEME_REGISTRY:
+        _THEME_REGISTRY.update(_compute_builtin_themes())
+
+
+def _get_theme(theme_id: str) -> ThemeDefinition | None:
+    if not _THEME_REGISTRY:
+        load_theme_registry(None)
+    return _THEME_REGISTRY.get(theme_id) or _THEME_REGISTRY.get("light")
+
+
+def list_available_themes(themes_dir: Path | str | None, language: str = "en") -> list[tuple[str, str]]:
+    if not _THEME_REGISTRY:
+        load_theme_registry(themes_dir)
+    result = []
+    for tid, theme in _THEME_REGISTRY.items():
+        name = theme.name.get(language, theme.name.get("en", tid))
+        result.append((tid, name))
+    return result
+
 
 def is_light_theme(theme: str) -> bool:
-    return theme in LIGHT_THEMES
+    td = _get_theme(theme)
+    return td.is_light if td else False
 
 
 def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -> str:
+    td = _get_theme(theme)
+    css = td.stylesheet if td else ""
+    if not css:
+        return ""
+    arrow_rule = "image: none;"
+    if chevron_icon:
+        normalized_icon = chevron_icon.replace("\\", "/")
+        arrow_rule = f'image: url("{normalized_icon}");'
+    check_rule = "image: none;"
+    if check_icon:
+        normalized_check = check_icon.replace("\\", "/")
+        check_rule = f'image: url("{normalized_check}");'
+    css = css.replace("__COMBO_ARROW__", arrow_rule)
+    return css.replace("__CHECK_ICON__", check_rule)
+
+
+def ensure_theme_files(themes_dir: Path | str) -> None:
+    td = Path(themes_dir)
+    td.mkdir(parents=True, exist_ok=True)
+    for tid, theme_def in _compute_builtin_themes().items():
+        path = td / f"{tid.replace(' ', '_')}.json"
+        if not path.exists():
+            path.write_text(
+                json.dumps({
+                    "id": theme_def.id,
+                    "name": theme_def.name,
+                    "is_light": theme_def.is_light,
+                    "stylesheet": theme_def.stylesheet,
+                }, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+
+def _build_base_css() -> tuple[str, str]:
     night = """
     QWidget {
         background: #0f1420;
@@ -1100,17 +1254,12 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
         background: #e7efff;
     }
     """
+    return night, light
 
-    arrow_rule = "image: none;"
-    if chevron_icon:
-        normalized_icon = chevron_icon.replace("\\", "/")
-        arrow_rule = f'image: url("{normalized_icon}");'
-    check_rule = "image: none;"
-    if check_icon:
-        normalized_check = check_icon.replace("\\", "/")
-        check_rule = f'image: url("{normalized_check}");'
-    dark = (
-        night
+
+def _compute_dark(night_css: str) -> str:
+    return (
+        night_css
         .replace("#0f1420", "#151618")
         .replace("#101725", "#181a1d")
         .replace("#101726", "#181a1d")
@@ -1161,8 +1310,10 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
         .replace("background: #31363f;", "background: #1d2127;")
     )
 
-    oled = (
-        dark
+
+def _compute_oled(dark_css: str) -> str:
+    return (
+        dark_css
         .replace("#151618", "#0a0b0d")
         .replace("#181a1d", "#0d0f12")
         .replace("#15171a", "#101215")
@@ -1185,8 +1336,10 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
         .replace("#6b7280", "#646c79")
     )
 
-    light_blue = (
-        light
+
+def _compute_light_blue(light_css: str) -> str:
+    return (
+        light_css
         .replace("#eef2f8", "#e7f2ff")
         .replace("#f3f6fd", "#edf6ff")
         .replace("#f5f7fb", "#eaf3ff")
@@ -1217,15 +1370,3 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
         .replace("#7480ff", "#76a7ff")
         .replace("#6773ff", "#78aaff")
     )
-
-    styles = {
-        "night": night,
-        "midnight": night,
-        "dark": dark,
-        "oled": oled,
-        "light": light,
-        "light blue": light_blue,
-    }
-    style = styles.get(theme, dark)
-    style = style.replace("__COMBO_ARROW__", arrow_rule)
-    return style.replace("__CHECK_ICON__", check_rule)

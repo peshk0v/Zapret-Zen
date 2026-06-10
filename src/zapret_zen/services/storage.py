@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from zapret_zen.domain import AppPaths
+from zapret_zen.ui.theme import ensure_theme_files
 
 
 class StorageManager:
@@ -20,6 +21,7 @@ class StorageManager:
             if isinstance(path, Path):
                 path.mkdir(parents=True, exist_ok=True)
         self._ensure_sample_files()
+        ensure_theme_files(self.paths.themes_dir)
 
     def _ensure_sample_files(self) -> None:
         components_file = self.paths.data_dir / "components.json"

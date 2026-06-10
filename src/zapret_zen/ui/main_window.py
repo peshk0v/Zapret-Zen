@@ -65,7 +65,7 @@ from PySide6.QtWidgets import (
 )
 
 from zapret_zen.bootstrap import ApplicationContext
-from zapret_zen.ui.theme import build_stylesheet, is_light_theme
+from zapret_zen.ui.theme import _get_theme, build_stylesheet, is_light_theme, list_available_themes, load_theme_registry
 
 
 class WindowsTaskbarIntegration:
@@ -1976,24 +1976,11 @@ def _onboarding_muted_color(theme: str) -> str:
     return "#4b5d78" if is_light_theme(theme) else "#9db2d8"
 
 
-def _theme_display_name(theme: str, language: str = "en") -> str:
-    if language == "ru":
-        names = {
-            "night": "Ночная",
-            "dark": "Тёмно-серая",
-            "oled": "Тёмная",
-            "light": "Светлая",
-            "light blue": "Светло-синяя",
-        }
-    else:
-        names = {
-            "night": "Night",
-            "dark": "Dark Gray",
-            "oled": "Dark",
-            "light": "Light",
-            "light blue": "Light Blue",
-        }
-    return names.get(theme, theme.title())
+def _theme_badge_name(theme_id: str, language: str = "en") -> str:
+    td = _get_theme(theme_id)
+    if td is not None:
+        return td.name.get(language, td.name.get("en", theme_id))
+    return theme_id.title()
 
 
 def _language_display_name(language: str, ui_language: str = "en") -> str:
@@ -2780,8 +2767,8 @@ class SettingsDialog(AppDialog):
 
         self.theme_combo = ClickSelectComboBox()
         ui_language = self.context.settings.get().language
-        for theme_id in ("night", "dark", "oled", "light", "light blue"):
-            self.theme_combo.addItem(_theme_display_name(theme_id, ui_language), theme_id)
+        for theme_id, theme_name in list_available_themes(self.context.paths.themes_dir, ui_language):
+            self.theme_combo.addItem(theme_name, theme_id)
         self.language_combo = ClickSelectComboBox()
         for language_id in ("ru", "en"):
             self.language_combo.addItem(_language_display_name(language_id, ui_language), language_id)
@@ -6357,9 +6344,26 @@ class MainWindow(QMainWindow):
 
         # --- Application section ---
         app_section = _section(self._t("Приложение", "Application"))
-        theme_items = [(_theme_display_name(t, ui_language), t) for t in ("night", "dark", "oled", "light", "light blue")]
-        theme_w, _ = _segment(theme_items, settings.theme, "theme")
-        app_section.addWidget(theme_w)
+        theme_list = QListWidget()
+        theme_list.setObjectName("SettingsThemeList")
+        theme_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        theme_items = list_available_themes(self.context.paths.themes_dir, ui_language)
+        theme_list.setFixedHeight(30 * len(theme_items))
+        for tid, tname in theme_items:
+            item = QListWidgetItem(tname, theme_list)
+            item._theme_id = tid
+            if tid == settings.theme:
+                theme_list.setCurrentItem(item)
+        ctrl["theme_list"] = theme_list
+        app_section.addWidget(theme_list)
+        def _on_theme_selected() -> None:
+            item = theme_list.currentItem()
+            if item is not None:
+                tid = getattr(item, "_theme_id", None)
+                if tid and tid != settings.theme:
+                    self.context.settings.update(theme=tid)
+                    self._apply_theme()
+        theme_list.currentItemChanged.connect(lambda: _on_theme_selected())
         lang_items = [(_language_display_name(l, ui_language), l) for l in ("ru", "en")]
         lang_w, _ = _segment(lang_items, settings.language, "language")
         app_section.addWidget(lang_w)
@@ -6565,7 +6569,13 @@ class MainWindow(QMainWindow):
                         btn.setChecked(True)
                         break
 
-        _set_seg("theme", settings.theme)
+        tl = ctrl.get("theme_list")
+        if isinstance(tl, QListWidget):
+            for i in range(tl.count()):
+                item = tl.item(i)
+                if item is not None and getattr(item, "_theme_id", None) == settings.theme:
+                    tl.setCurrentItem(item)
+                    break
         _set_seg("language", settings.language)
         cb = ctrl.get("autostart")
         if isinstance(cb, QCheckBox):
@@ -6632,9 +6642,13 @@ class MainWindow(QMainWindow):
                     return str(checked._seg_value)
             return None
 
-        val = _read_seg("theme")
-        if val:
-            payload["theme"] = val
+        tl = ctrl.get("theme_list")
+        if isinstance(tl, QListWidget):
+            item = tl.currentItem()
+            if item is not None:
+                tid = getattr(item, "_theme_id", None)
+                if tid:
+                    payload["theme"] = tid
         val = _read_seg("language")
         if val:
             payload["language"] = val
@@ -7365,8 +7379,6 @@ class MainWindow(QMainWindow):
             self._service_check_cache.clear()
             self._page_payload_cache.clear()
             self._cancel_page_transition()
-            self._apply_theme()
-            self._retranslate_ui()
             self.refresh_dashboard()
             self.refresh_services()
             self.refresh_components()
@@ -7900,6 +7912,7 @@ class MainWindow(QMainWindow):
                 )
 
     def _apply_theme(self) -> None:
+        load_theme_registry(self.context.paths.themes_dir)
         theme = self.context.settings.get().theme
         self._icon_cache.clear()
         self._service_icon_cache.clear()
@@ -10599,7 +10612,7 @@ class MainWindow(QMainWindow):
             self._set_badge("zapret", self._t("Загрузка", "Loading"), "status_warn.svg")
             self._set_badge("tg", self._t("Загрузка", "Loading"), "status_warn.svg")
             self._set_badge("mods", self._t("Загрузка", "Loading"), "status_mod.svg")
-            self._set_badge("theme", _theme_display_name(settings.theme, settings.language), self._theme_status_icon_name())
+            self._set_badge("theme", _theme_badge_name(settings.theme, settings.language), self._theme_status_icon_name())
             return
         if self.general_combo.isVisible():
             self._refresh_general_combo(settings.selected_zapret_general)
@@ -10652,7 +10665,7 @@ class MainWindow(QMainWindow):
         self._set_badge("zapret", zapret_text, zapret_icon)
         self._set_badge("tg", tg_text, tg_icon)
         self._set_badge("mods", f"{len(enabled_mods)} {self._t('Активно', 'Active')}", "status_mod.svg")
-        self._set_badge("theme", _theme_display_name(settings.theme, settings.language), self._theme_status_icon_name())
+        self._set_badge("theme", _theme_badge_name(settings.theme, settings.language), self._theme_status_icon_name())
 
     def _set_power_status_pill(self, text: str, state: str) -> None:
         if self.power_caption_text is None:

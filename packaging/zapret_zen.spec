@@ -49,6 +49,7 @@ datas = [
     (str(project_root / "sample_data"), "sample_data"),
     (str(project_root / "runtime"), "runtime"),
     (str(project_root / "ui_assets"), "ui_assets"),
+    (str(project_root / "themes"), "themes"),
 ]
 crypto_hiddenimports = collect_submodules("cryptography")
 certifi_datas = collect_data_files("certifi")

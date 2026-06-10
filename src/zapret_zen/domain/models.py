@@ -7,8 +7,16 @@ from typing import Any
 
 
 @dataclass(slots=True)
+class ThemeDefinition:
+    id: str
+    name: dict[str, str]
+    is_light: bool
+    stylesheet: str
+
+
+@dataclass(slots=True)
 class AppSettings:
-    theme: str = "oled"
+    theme: str = "light"
     language: str = "ru"
     start_in_tray: bool = False
     autostart_windows: bool = False
@@ -179,6 +187,7 @@ class AppPaths:
     logs_dir: Path
     data_dir: Path
     ui_assets_dir: Path
+    themes_dir: Path
 
 
 @dataclass(slots=True)

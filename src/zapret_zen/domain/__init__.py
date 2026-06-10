@@ -13,6 +13,7 @@ from .models import (
     ModIndexItem,
     NotificationEntry,
     ReleaseEntry,
+    ThemeDefinition,
     UpdateInfo,
 )
 
@@ -31,5 +32,6 @@ __all__ = [
     "ModIndexItem",
     "NotificationEntry",
     "ReleaseEntry",
+    "ThemeDefinition",
     "UpdateInfo",
 ]

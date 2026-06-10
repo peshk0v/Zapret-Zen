@@ -6,6 +6,7 @@ from typing import Any
 
 from zapret_zen.domain import AppPaths
 from zapret_zen.runtime_env import development_install_root, is_packaged_runtime, packaged_install_root, packaged_resource_root
+from zapret_zen.ui.theme import load_theme_registry
 from zapret_zen.services.autostart import AutostartManager
 from zapret_zen.services.components import ProcessManager
 from zapret_zen.services.diagnostics import DiagnosticsManager
@@ -49,12 +50,14 @@ def bootstrap_application() -> ApplicationContext:
     runtime_dir = install_root / "runtime"
     ui_assets_dir = install_root / "ui_assets"
     sample_data_dir = install_root / "sample_data"
+    themes_dir = install_root / "themes"
     _hydrate_bundled_assets(
         resource_root=resource_root,
         install_root=install_root,
         runtime_dir=runtime_dir,
         ui_assets_dir=ui_assets_dir,
         sample_data_dir=sample_data_dir,
+        themes_dir=themes_dir,
     )
 
     paths = AppPaths(
@@ -70,9 +73,12 @@ def bootstrap_application() -> ApplicationContext:
         logs_dir=install_root / "logs",
         data_dir=install_root / "data",
         ui_assets_dir=ui_assets_dir,
+        themes_dir=install_root / "themes",
     )
     storage = StorageManager(paths)
     storage.ensure_layout()
+
+    load_theme_registry(paths.themes_dir)
 
     settings = SettingsManager(storage)
     logging = LoggingManager(storage)
@@ -159,10 +165,12 @@ def _hydrate_bundled_assets(
     runtime_dir: Path,
     ui_assets_dir: Path,
     sample_data_dir: Path,
+    themes_dir: Path,
 ) -> None:
     bundled_runtime = resource_root / "runtime"
     bundled_ui_assets = resource_root / "ui_assets"
     bundled_sample_data = resource_root / "sample_data"
+    bundled_themes = resource_root / "themes"
 
     if bundled_runtime.exists() and not runtime_dir.exists():
         shutil.copytree(bundled_runtime, runtime_dir, dirs_exist_ok=True)
@@ -172,3 +180,6 @@ def _hydrate_bundled_assets(
 
     if bundled_sample_data.exists() and not sample_data_dir.exists():
         shutil.copytree(bundled_sample_data, sample_data_dir, dirs_exist_ok=True)
+
+    if bundled_themes.exists() and not themes_dir.exists():
+        shutil.copytree(bundled_themes, themes_dir, dirs_exist_ok=True)
