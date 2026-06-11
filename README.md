@@ -22,7 +22,3 @@ python -m zapret_zen.main
 ```
 venv\Scripts\python.exe -m PyInstaller -y packaging\zapret_zen.spec
 ```
-
-## To - Do
-- [x] - Полностью выпилить VPN
-- [ ] - Переписать интерфейс на библиотеку eel
