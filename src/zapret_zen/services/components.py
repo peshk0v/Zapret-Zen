@@ -1046,6 +1046,7 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
             return sys.executable
         install_root = self.storage.paths.install_root
         candidates = [
+            install_root / ".venv" / "Scripts" / "pythonw.exe",
             install_root / ".venv" / "Scripts" / "python.exe",
             install_root / ".venv" / "bin" / "python",
             Path(sys.executable),

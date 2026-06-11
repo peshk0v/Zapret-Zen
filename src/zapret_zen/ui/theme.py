@@ -461,11 +461,6 @@ def _build_base_css() -> tuple[str, str]:
     QToolButton[class="power"][state="off"]:hover {
         background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #3a5685, stop:0.55 #30486f, stop:1 #223451);
     }
-    #LogsFilesShell {
-        background: #101725;
-        border: 1px solid #24304a;
-        border-radius: 16px;
-    }
     QTabWidget::pane {
         background: transparent;
         border: none;
@@ -485,6 +480,29 @@ def _build_base_css() -> tuple[str, str]:
     }
     QTabBar::tab:hover:!selected {
         background: #1a2740;
+    }
+    QTabBar::scroller {
+        background: transparent;
+        border: none;
+    }
+    QTabBar::close-button {
+        margin: 0px;
+    }
+    QTabBar::tear {
+        background: none;
+        border: none;
+    }
+    QTabBar::left-button {
+        background: transparent;
+        border: none;
+        margin: 0px;
+        padding: 0px;
+    }
+    QTabBar::right-button {
+        background: transparent;
+        border: none;
+        margin: 0px;
+        padding: 0px;
     }
     QPushButton[class="settingsSegment"] {
         background: #111a2b;
@@ -941,11 +959,6 @@ def _build_base_css() -> tuple[str, str]:
     QPushButton:hover {
         background: #edf3ff;
     }
-    #LogsFilesShell {
-        background: #ffffff;
-        border: 1px solid #d0ddf0;
-        border-radius: 16px;
-    }
     QTabWidget::pane {
         background: transparent;
         border: none;
@@ -965,6 +978,29 @@ def _build_base_css() -> tuple[str, str]:
     }
     QTabBar::tab:hover:!selected {
         background: #e6eef9;
+    }
+    QTabBar::scroller {
+        background: transparent;
+        border: none;
+    }
+    QTabBar::close-button {
+        margin: 0px;
+    }
+    QTabBar::tear {
+        background: none;
+        border: none;
+    }
+    QTabBar::left-button {
+        background: transparent;
+        border: none;
+        margin: 0px;
+        padding: 0px;
+    }
+    QTabBar::right-button {
+        background: transparent;
+        border: none;
+        margin: 0px;
+        padding: 0px;
     }
     QPushButton[class="settingsSegment"] {
         background: #f2f7ff;

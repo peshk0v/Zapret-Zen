@@ -1786,6 +1786,8 @@ class ScrollFadeOverlay(QWidget):
             return QColor("#101215")
         if self._theme_name == "dark":
             return QColor("#15171a")
+        if is_light_theme(self._theme_name):
+            return QColor("#f4f7fc")
         return QColor("#0d1320")
 
     def _sync_geometry(self) -> None:
@@ -1912,6 +1914,8 @@ def _content_surface_color(theme: str) -> QColor:
         return QColor("#101215")
     if theme == "dark":
         return QColor("#15171a")
+    if is_light_theme(theme):
+        return QColor("#f4f7fc")
     return QColor("#0d1320")
 
 
@@ -1926,6 +1930,8 @@ def _files_inner_surface_color(theme: str) -> QColor:
         return QColor("#19263f")
     if theme == "dark":
         return QColor("#1a1c20")
+    if is_light_theme(theme):
+        return QColor("#ffffff")
     return QColor("#1a1c20")
 
 
@@ -1942,6 +1948,8 @@ def _dialog_surface_color(theme: str) -> QColor:
         return QColor("#101215")
     if theme == "dark":
         return QColor("#181b1f")
+    if is_light_theme(theme):
+        return QColor("#ffffff")
     return QColor("#151f33")
 
 
@@ -3159,46 +3167,6 @@ class SettingsDialog(AppDialog):
             self.tg_dc_ip_input.setPlainText("")
         else:
             self.tg_dc_ip_input.setPlainText("2:149.154.167.220\n4:149.154.167.220")
-
-
-class LogsFilesDialog(QDialog):
-    def __init__(self, main_window: MainWindow) -> None:
-        super().__init__(main_window)
-        self.main_window = main_window
-        self.setWindowTitle(main_window._t("Логи и файлы", "Logs and Files"))
-        self.setMinimumSize(760, 520)
-        self.resize(860, 600)
-        self.setWindowModality(Qt.WindowModality.WindowModal)
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-
-        shell = QFrame()
-        shell.setObjectName("LogsFilesShell")
-
-        layout = QVBoxLayout(shell)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(10)
-
-        tabs = QTabWidget()
-        tabs.setDocumentMode(True)
-        tabs.setObjectName("LogsFilesTabs")
-
-        logs_page = main_window._build_logs_page()
-        tabs.addTab(logs_page, main_window._t("Логи", "Logs"))
-
-        files_page = main_window._build_files_page()
-        tabs.addTab(files_page, main_window._t("Файлы", "Files"))
-
-        layout.addWidget(tabs)
-        root.addWidget(shell)
-
-        QTimer.singleShot(0, lambda: main_window._set_logs_live_enabled(True))
-
-    def closeEvent(self, event: QCloseEvent) -> None:
-        self.main_window._set_logs_live_enabled(False)
-        super().closeEvent(event)
 
 
 class MainWindow(QMainWindow):
@@ -6342,26 +6310,16 @@ class MainWindow(QMainWindow):
 
         # --- Application section ---
         app_section = _section(self._t("Приложение", "Application"))
-        theme_list = QListWidget()
-        theme_list.setObjectName("SettingsThemeList")
-        theme_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        theme_combo = QComboBox()
+        theme_combo.setObjectName("SettingsThemeCombo")
         theme_items = list_available_themes(self.context.paths.themes_dir, ui_language)
-        theme_list.setFixedHeight(30 * len(theme_items))
         for tid, tname in theme_items:
-            item = QListWidgetItem(tname, theme_list)
-            item._theme_id = tid
+            theme_combo.addItem(tname, tid)
             if tid == settings.theme:
-                theme_list.setCurrentItem(item)
-        ctrl["theme_list"] = theme_list
-        app_section.addWidget(theme_list)
-        def _on_theme_selected() -> None:
-            item = theme_list.currentItem()
-            if item is not None:
-                tid = getattr(item, "_theme_id", None)
-                if tid and tid != settings.theme:
-                    self.context.settings.update(theme=tid)
-                    self._apply_theme()
-        theme_list.currentItemChanged.connect(lambda: _on_theme_selected())
+                theme_combo.setCurrentIndex(theme_combo.count() - 1)
+        ctrl["theme_combo"] = theme_combo
+        app_section.addWidget(QLabel(self._t("Тема", "Theme")))
+        app_section.addWidget(theme_combo)
         lang_items = [(_language_display_name(l, ui_language), l) for l in ("ru", "en")]
         lang_w, _ = _segment(lang_items, settings.language, "language")
         app_section.addWidget(lang_w)
@@ -6485,6 +6443,18 @@ class MainWindow(QMainWindow):
         save_btn.clicked.connect(lambda: self._save_settings_page(page))
         layout.addWidget(save_btn)
 
+        # --- Logs and Files section ---
+        logs_files_section = _section(self._t("Логи и файлы", "Logs and Files"))
+        logs_files_tabs = QTabWidget()
+        logs_files_tabs.setDocumentMode(True)
+        logs_files_tabs.setObjectName("SettingsLogsFilesTabs")
+        logs_files_tabs.tabBar().setUsesScrollButtons(False)
+        logs_page = self._build_logs_page()
+        logs_files_tabs.addTab(logs_page, self._t("Логи", "Logs"))
+        files_page = self._build_files_page()
+        logs_files_tabs.addTab(files_page, self._t("Файлы", "Files"))
+        logs_files_section.addWidget(logs_files_tabs)
+
         tools_section = _section(self._t("Инструменты", "Tools"))
         def _make_tool_btn(text: str, slot) -> QPushButton:
             btn = QPushButton(text)
@@ -6548,6 +6518,7 @@ class MainWindow(QMainWindow):
         credits.setProperty("class", "muted")
         credits.setWordWrap(True)
         layout.addWidget(credits)
+
         return page
 
     def _reload_settings_page(self) -> None:
@@ -6567,12 +6538,11 @@ class MainWindow(QMainWindow):
                         btn.setChecked(True)
                         break
 
-        tl = ctrl.get("theme_list")
-        if isinstance(tl, QListWidget):
-            for i in range(tl.count()):
-                item = tl.item(i)
-                if item is not None and getattr(item, "_theme_id", None) == settings.theme:
-                    tl.setCurrentItem(item)
+        tc = ctrl.get("theme_combo")
+        if isinstance(tc, QComboBox):
+            for i in range(tc.count()):
+                if tc.itemData(i) == settings.theme:
+                    tc.setCurrentIndex(i)
                     break
         _set_seg("language", settings.language)
         cb = ctrl.get("autostart")
@@ -6640,13 +6610,11 @@ class MainWindow(QMainWindow):
                     return str(checked._seg_value)
             return None
 
-        tl = ctrl.get("theme_list")
-        if isinstance(tl, QListWidget):
-            item = tl.currentItem()
-            if item is not None:
-                tid = getattr(item, "_theme_id", None)
-                if tid:
-                    payload["theme"] = tid
+        tc = ctrl.get("theme_combo")
+        if isinstance(tc, QComboBox):
+            tid = tc.currentData()
+            if tid:
+                payload["theme"] = tid
         val = _read_seg("language")
         if val:
             payload["language"] = val
@@ -7297,21 +7265,6 @@ class MainWindow(QMainWindow):
                 self._settings_dialog_signature = None
             QTimer.singleShot(0, lambda p=payload, b=before: self._apply_settings_payload(b, p))
 
-    def _open_zapret_additional_dialog(self) -> None:
-        QTimer.singleShot(0, self._show_logs_files_dialog)
-
-    def _show_logs_files_dialog(self) -> None:
-        dialog = LogsFilesDialog(self)
-        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        dialog.finished.connect(lambda: self._on_logs_files_dialog_closed())
-        self._logs_files_dialog = dialog
-        dialog.raise_()
-        dialog.activateWindow()
-        dialog.exec()
-
-    def _on_logs_files_dialog_closed(self) -> None:
-        self._logs_files_dialog = None
-
     def _open_component_settings(self, component_id: str) -> None:
         target = str(component_id or "").strip()
         if target == "zapret":
@@ -7493,14 +7446,18 @@ class MainWindow(QMainWindow):
                 settings_response_revision = 0
             if settings_response_revision and settings_response_revision < self._settings_save_revision:
                 return
+        # Store pending theme before reload to restore it if needed
+        pending_theme = self._pending_settings_payload.get("theme") if self._pending_settings_payload else None
         self.context.settings.reload()
-        if action == "set_selected_services" and service_response_revision:
-            self._services_selection_acked_revision = max(self._services_selection_acked_revision, service_response_revision)
         if action == "apply_settings" and settings_response_revision:
             self._settings_save_acked_revision = max(self._settings_save_acked_revision, settings_response_revision)
             if settings_response_revision >= self._settings_save_revision:
                 self._pending_settings_payload = None
                 self._settings_save_acked_revision = self._settings_save_revision
+            # Restore theme if it was pending and got reverted by reload
+            if pending_theme and self.context.settings.get().theme != pending_theme:
+                self.context.settings.update(theme=str(pending_theme))
+                self._apply_theme()
         self._restore_optimistic_settings_if_needed()
         self._restore_optimistic_service_selection_if_needed()
         self._update_runtime_snapshot_from_payload(payload)
@@ -8436,6 +8393,8 @@ class MainWindow(QMainWindow):
             return "#111317", "#2b3138", "#eef3ff", "#1b2028", "#263041"
         if theme == "dark":
             return "#1a1d23", "#3d4655", "#eef2fb", "#242a34", "#2b3340"
+        if is_light_theme(theme):
+            return "#f5f8fe", "#c8d7ee", "#152033", "#e6eefb", "#d6e4fa"
         return "#141f32", "#304463", "#eef2fb", "#1d2740", "#273349"
 
     def _open_mod_emoji_menu(self, mod_id: str, button: QToolButton) -> None:
@@ -12750,11 +12709,6 @@ class MainWindow(QMainWindow):
                 connect_btn.clicked.connect(self._prompt_tg_proxy_connect)
                 self._attach_button_animations(connect_btn)
                 card_layout.addWidget(connect_btn)
-            if component.id == "zapret":
-                additional_btn = QPushButton(self._t("Дополнительно", "Additional"))
-                additional_btn.clicked.connect(self._open_zapret_additional_dialog)
-                self._attach_button_animations(additional_btn)
-                card_layout.addWidget(additional_btn)
             if component.id == "peshk0v-vpn":
                 self._add_peshk0v_vpn_controls(card_layout, vpn_state, state)
             if state is not None and getattr(state, "last_error", ""):

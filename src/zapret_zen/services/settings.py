@@ -53,10 +53,19 @@ class SettingsManager:
         if raw.get("theme") == "midnight":
             settings.theme = "night"
             changed = True
-
-        if raw.get("theme") not in ("night", "midnight", "dark", "oled", "light", "light blue"):
-            settings.theme = "oled"
+        elif raw.get("theme") == "light blue":
+            settings.theme = "light_blue"
             changed = True
+
+        current_theme = str(settings.theme or "")
+        if not current_theme:
+            settings.theme = "light"
+            changed = True
+        else:
+            theme_file = self.storage.paths.themes_dir / f"{current_theme.replace(' ', '_')}.json"
+            if not theme_file.exists():
+                settings.theme = "light"
+                changed = True
 
         if raw.get("zapret_ipset_mode") not in {"loaded", "none", "any"}:
             settings.zapret_ipset_mode = "loaded"
