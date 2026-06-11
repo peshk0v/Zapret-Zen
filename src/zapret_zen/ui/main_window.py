@@ -5339,7 +5339,6 @@ class MainWindow(QMainWindow):
             ("zapret", "status_warn.svg", "Zapret"),
             ("tg", "status_warn.svg", "TG Proxy"),
             ("mods", "status_mod.svg", "Mods"),
-            ("theme", "status_theme.svg", self._t("Тема", "Theme")),
         ]:
             badge = self._build_status_badge(key, icon_name, title_text)
             badges_row.addWidget(badge)
@@ -5347,7 +5346,6 @@ class MainWindow(QMainWindow):
         badges_row.setStretch(1, 1)
         badges_row.setStretch(2, 1)
         badges_row.setStretch(3, 1)
-        badges_row.setStretch(4, 1)
         top_layout.addLayout(badges_row)
         root.addWidget(top)
 
@@ -10612,7 +10610,6 @@ class MainWindow(QMainWindow):
             self._set_badge("zapret", self._t("Загрузка", "Loading"), "status_warn.svg")
             self._set_badge("tg", self._t("Загрузка", "Loading"), "status_warn.svg")
             self._set_badge("mods", self._t("Загрузка", "Loading"), "status_mod.svg")
-            self._set_badge("theme", _theme_badge_name(settings.theme, settings.language), self._theme_status_icon_name())
             return
         if self.general_combo.isVisible():
             self._refresh_general_combo(settings.selected_zapret_general)
@@ -10665,7 +10662,6 @@ class MainWindow(QMainWindow):
         self._set_badge("zapret", zapret_text, zapret_icon)
         self._set_badge("tg", tg_text, tg_icon)
         self._set_badge("mods", f"{len(enabled_mods)} {self._t('Активно', 'Active')}", "status_mod.svg")
-        self._set_badge("theme", _theme_badge_name(settings.theme, settings.language), self._theme_status_icon_name())
 
     def _set_power_status_pill(self, text: str, state: str) -> None:
         if self.power_caption_text is None:
