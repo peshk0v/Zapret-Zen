@@ -1,0 +1,315 @@
+Metadata-Version: 2.4
+Name: zapret-zen
+Version: 2.0.0
+Summary: Windows desktop hub for managing external network utilities and configuration packs.
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: PySide6>=6.7
+Requires-Dist: certifi>=2024.0.0
+Requires-Dist: cryptography>=46.0.0
+Requires-Dist: pydivert>=3.1.1
+Provides-Extra: dev
+Requires-Dist: pyinstaller>=6.6; extra == "dev"
+Requires-Dist: nuitka>=2.7; extra == "dev"
+Requires-Dist: Pillow>=10.0; extra == "dev"
+Dynamic: license-file
+
+﻿<div align="center">
+
+⭐️ Пожалуйста, поставьте звезду этому репозиторию, чтобы бесплатно поддержать меня.
+
+**Это - версия для Windows**
+
+<p align="center">
+  <a href="https://github.com/peshk0v/zapret-zen-Mac/">
+    <img src="https://img.shields.io/badge/Версия%20для%20MacOS:-GitHub-6f42c1?style=for-the-badge&logo=apple&logoColor=white" alt="Скачать последнюю версию">
+  </a>
+</p>
+
+# 🚀 [Zapret-Zen](https://github.com/peshk0v/zapret-zen)
+
+**Zapret-Zen** - Windows-приложение для удобного управления `zapret`, `tg-ws-proxy` и встроенным `peshk0v vpn` из одного интерфейса.
+
+**Для обычных пользователей** - без bat-файлов, поиска папок, ручной правки конфигов и лишних окон. Приложение помогает быстро подобрать рабочие настройки под нужные сайты, игры и сервисы.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/banner-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="assets/banner-light.png">
+  <img alt="Zapret-Zen banner" src="assets/banner-dark.png">
+</picture>
+
+<div align="center">
+
+<a href="https://github.com/peshk0v/zapret-zen/releases/latest">
+  <img src="https://img.shields.io/badge/Скачать-последнюю%20версию-blue?style=for-the-badge&logo=github" alt="Скачать последнюю версию">
+</a>
+<br><br>
+<img src="https://img.shields.io/github/downloads/peshk0v/zapret-zen/total?style=for-the-badge&label=%D0%97%D0%B0%D0%B3%D1%80%D1%83%D0%B7%D0%BE%D0%BA" alt="Всего загрузок">
+<img src="https://img.shields.io/github/stars/peshk0v/zapret-zen?style=for-the-badge&label=%D0%97%D0%B2%D1%91%D0%B7%D0%B4" alt="Звёзды">
+<img src="https://img.shields.io/github/v/release/peshk0v/zapret-zen?style=for-the-badge&label=%D0%92%D0%B5%D1%80%D1%81%D0%B8%D1%8F" alt="Последняя версия">
+
+</div>
+
+<p align="center">
+  <a href="https://github.com/peshk0v/zapret-zen/blob/main/donations.md#-%D0%BF%D0%BE%D0%B4%D0%B4%D0%B5%D1%80%D0%B6%D0%B0%D1%82%D1%8C-%D0%BF%D1%80%D0%BE%D0%B5%D0%BA%D1%82">
+    <img src="https://img.shields.io/badge/%20Отправить%20Пожертвование-💫-6f42c1?style=for-the-badge" alt="Отправить пожертвование">
+  </a>
+</p>
+
+**Автор**: peshk0v • [GitHub](https://github.com/peshk0v/zapret-zen) • [Задать вопрос](https://t.me/zzaprethub)
+
+Что-то не работает? • [Исправить](#не-работает) • [Создать issue](https://github.com/peshk0v/zapret-zen/issues) • [Поддержка](https://t.me/zzaprethub)
+
+</div>
+
+## 💡 Что это такое
+
+Zapret-Zen объединяет в одном окне:
+
+✅ запуск и остановку `Zapret`, `TG-WS-Proxy` и `peshk0v vpn`  
+✅ быстрое переключение между Zapret и VPN одной кнопкой  
+✅ выбор сервисов, игр и сайтов, под которые нужно настроить обход  
+✅ автоматический подбор подходящей `general`-конфигурации для `zapret`  
+✅ встроенный VPN-режим через подписку `vpn.peshk0v.ru` с 10-ти дневным бесплатным периодом  
+✅ настройку маршрутизации VPN, системного прокси и проксирования отдельных процессов  
+✅ гибкий импорт и создание модификаций прямо внутри приложения  
+✅ диагностику, тестирование, уведомления и расширенные логи  
+✅ просмотр логов и редактирование файлов  
+✅ автозапуск вместе с Windows и работу в трее  
+
+> Приложение создано для того, чтобы пользователь мог настроить обход максимально быстро: выбрать нужные сервисы, нажать подбор конфигурации и получить рабочий вариант без ручного перебора bat-файлов.
+
+## ✨ Возможности
+
+| Фича | Описание |
+|------|----------|
+| 🎮 **Единая кнопка** | Включение и отключение обходов одним кликом |
+| 🔁 **Быстрое переключение** | Переключение между Zapret и VPN одной кнопкой в быстром доступе |
+| 🧭 **Сервисы** | Быстрая настройка Zapret под выбранные сайты, игры и приложения |
+| 🧪 **Автоподбор** | Приложение само проверяет конфигурации и помогает выбрать рабочий вариант |
+| 🧩 **Маршрутизация VPN** | Global, RU blacklist, RU whitelist, системный прокси и выбор процессов |
+| 🎀 **Компоненты** | Zapret, TG-WS-Proxy и peshk0v vpn управляются из одного раздела |
+| ⚙️ **Гибкая работа** | Можно включать и выключать компоненты отдельно |
+| 🔷 **Остается в трее** | Не нужно держать окно постоянно открытым |
+| ❤️‍🩹 **Настройки в трее** | Можно быстро менять состояние приложения через меню в трее |
+| 🌙 **Работа в фоне** | Фоновые процессы запускаются только тогда, когда они действительно нужны |
+| 📦 **Моды** | Импорт модификаций из папки, ZIP, GitHub и отдельных файлов |
+| 🛠️ **Редактор модов** | Модификации можно создавать и настраивать прямо внутри приложения |
+| 📁 **Файлы** | Возможность отдельно редактировать конфигурации Zapret |
+| 🎚️ **Инструменты** | Тестирование general'ов, диагностика и обновления компонентов |
+| 🔔 **Уведомления** | Встроенные уведомления о важных событиях, ошибках и завершении действий |
+| 🎨 **UI** | 5 Тем на выбор, RU/EN языки, удобный и красивый интерфейс, функциональность |
+| 🚀 **Автозапуск** | Можно включить запуск программы (и компонентов) вместе с Windows |
+| 📱 **Форматы** | Portable + universal установщик для x64 и ARM64 |
+| 🛡️ **Безопасность** | Отдельный runtime, оригинальные компоненты, бэкапы и локальные настройки |
+| 💫 **Обновления** | Автоматические обновления приложения и компонентов |
+| ❌ **Данные** | Приложение не собирает данные, даже анонимные |
+
+## 🧭 Сервисы и быстрый подбор
+
+Вместо ручного выбора настроек дотаточно просто отметить сайты, игры и приложения, которыми вы пользуетесь.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/services-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="assets/services-light.png">
+  <img alt="Меню модификаций" src="assets/mods-dark.png" width="75%">
+</picture>
+
+> Приложение подберет правила и проверит подходящие конфигурации для выбранных сценариев. Встроенный подбор помогает быстро и удобно найти рабочую конфигурацию для конкретной сети и конкретных задач. Особенно это полезно для игр, голосовых чатов, лаунчеров, загрузок, CDN и сервисов авторизации.
+
+## 🛡️ peshk0v vpn
+
+`peshk0v vpn` - встроенный VPN-режим Zapret-Zen, работающий через подписку `vpn.peshk0v.ru`.
+
+VPN можно использовать как альтернативу Zapret. В быстром доступе есть отдельная кнопка, которая позволяет одной кнопкой переключаться между Zapret и `peshk0v vpn`. 
+
+Возможности `peshk0v vpn`:
+
+🔹 множество различных инбаундов   
+🔹 режим TUN для работы на уровне системы  
+🔹 настройка маршрутизации: global, RU blacklist, RU whitelist  
+🔹 режимы системного прокси: Clear system proxy, Set system proxy, Do not change system proxy, PAC mode  
+🔹 возможность проксировать только указанные процессы  
+🔹 локальный счетчик использованного трафика  
+🔹 10 дней бесплатного доступа  
+
+> `peshk0v vpn` не является универсальным импортом любых VPN-подписок. Компонент работает именно с подпиской `vpn.peshk0v.ru`. Таким образом я могу быть уверен в качестве соединения и работы компонента, а так же это позволяет монетизировать полностью бесплатное приложение.
+
+## 🎀 Компоненты
+
+Раздел **Компоненты** предназначен для включения, выключения и настройки встроенных компонентов приложения.
+
+В разделе можно:  
+🔹 Изменить `general` Zapret  
+🔹 Подключить TG-WS-Proxy к Telegram  
+🔹 Настроить и подключить `peshk0v vpn`  
+🔹 Скачать последнюю версию Telegram Desktop  
+🔹 Обновить любой из компонентов  
+🔹 Открыть настройки нужного компонента одной кнопкой  
+🔹 Включить или отключить любой компонент  
+
+> Компоненты Zapret-Zen управляются внутри приложения и не требуют запуска отдельных интерфейсов.
+
+## 🛠 Модификации
+
+🔹 Программа хранит все моды отдельно от других файлов  
+🔹 Не трогает базовые файлы, поэтому использование нескольких модификаций безопасно  
+🔹 Собирает модификации в одну - позволяет выбрать один из general, а списки собирает из всех включенных модификаций  
+🔹 Позволяет импортировать general, списки, ZIP, папки, GitHub-репозитории и отдельные файлы  
+🔹 Позволяет создавать и редактировать модификации прямо внутри приложения  
+🔹 Автоматически пересобирает merged runtime, если настройки или модификации изменились  
+
+> [!IMPORTANT]
+> Из модификаций не подтягиваются настройки **ipset mode** и **gaming mode** - их можно настроить отдельно в настройках приложения.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/mods-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="assets/mods-light.png">
+  <img alt="Меню модификаций" src="assets/mods-dark.png" width="75%">
+</picture>
+
+## 📁 Файлы
+
+В файлах можно отдельно редактировать:  
+🔹 IP-листы  
+🔹 IP-исключения  
+🔹 Домены  
+🔹 Исключения доменов  
+🔹 Hosts  
+
+> Для продвинутых пользователей доступен отдельный файловый редактор, который позволяет открывать конфигурационные файлы Zapret и модификаций.
+
+## 📦 Portable и Installer
+
+В проекте используются три основных формата поставки:
+
+- `portable\win_x64` - portable для Windows x64
+- `portable\win_arm64` - portable для Windows ARM64
+- `install_zapretzen.exe` - универсальный установщик, который установит подходящую версию
+
+## 💻 Требования
+
+- 🪟 Windows 10/11
+  
+> Для разработки:
+> 
+> 🐍 Python 3.11
+> 
+> ⚡ PowerShell 5+ / 7+
+
+## 🔗 Используемые проекты
+
+| Инструмент | Автор |
+|------------|--------|
+| [zapret-discord-youtube](https://github.com/Flowseal/zapret-discord-youtube) | **Flowseal** |
+| [tg-ws-proxy](https://github.com/Flowseal/tg-ws-proxy) | **Flowseal** |
+| [zapret](https://github.com/bol-van/zapret-win-bundle) экосистема | **bol-van** |
+
+> [!CAUTION]
+>
+> ### Авторство
+> **Zapret-Zen** = интерфейс + менеджер поверх этих инструментов.
+>
+> Приложение не присваивает авторство встроенных инструментов. Пользователь может модифицировать файлы самостоятельно, но авторство оригинальных проектов сохраняется.
+> 
+> В самой программе указаны инструменты и их авторы.
+
+# ↪️ Для разработчиков
+
+> [!IMPORTANT]
+> При разработке проектов на основе Zapret-Zen обязательно указывайте оригинального автора и авторов инструментов, перечисленных выше. Этого требует лицензия MIT.
+
+## 📁 Структура проекта
+
+Основные каталоги:
+
+- `📂 src/zapret_zen` - прикладная логика, UI и сервисы
+- `📂 installer` - код установщика
+- `📂 packaging` - `.spec`-файлы PyInstaller
+- `📂 runtime` - встроенные runtime-файлы bundled-инструментов
+- `📂 sample_data` - стартовые данные проекта
+- `📂 ui_assets` - иконки и UI-ресурсы
+
+Рабочие каталоги, которые появляются во время использования приложения:
+
+- `📂 data`
+- `📂 logs`
+- `📂 cache`
+- `📂 mods`
+- `📂 merged_runtime`
+- `📂 backups`
+
+## 🧪 Запуск в разработке
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -e .[dev]
+python -m zapret_zen.main
+```
+
+## 🔨 Сборка
+
+### Приложение
+
+```powershell
+.venv\Scripts\python.exe -m PyInstaller -y packaging\zapret_zen.spec
+```
+
+**Результат**: `dist\zapret_zen\`
+
+### Установщик
+
+```powershell
+.venv\Scripts\python.exe -m PyInstaller -y packaging\install_zapretzen.spec
+```
+
+**Результат**: `dist\install_zapretzen.exe`
+
+# Не работает
+
+> [!WARNING]
+>
+> ### Ругается антивирус
+> В программу встроен WinDivert - это инструмент для перехвата и фильтрации трафика, необходимый для работы компонента [zapret](https://github.com/Flowseal/zapret-discord-youtube).
+>
+> Его могут использовать злоумышленники, но сам по себе он не является вирусом.
+>
+> Некоторые антивирусы склонны относить файлы WinDivert к классам повышенного риска или хакерским инструментам. Происходит удаление файла и помещение его в карантин. При этом детект обычно имеет название `WinDivert` или `Not-a-virus:RiskTool.Multi.WinDivert`.
+>
+> В случае проблем с антивирусом добавьте папку с Zapret-Zen в исключения, либо отключите детектирование PUA - потенциально нежелательных приложений. Например, в Kaspersky есть галочка "Обнаруживать легальные приложения, которые злоумышленники часто используют для нанесения вреда". При аккуратной настройке рекомендуется добавить исключение, но если вы не до конца понимаете, что делаете, рекомендуется отключить детект PUA.
+
+> [!IMPORTANT]
+>
+> ### Не работают обходы
+> При любых ошибках и подтормаживаниях попробуйте:
+> 
+> 1. Выбрать нужные сервисы и запустить подбор конфигурации
+> 2. Установить Gaming mode: tcp + udp
+> 3. Установить IPset Mode: Loaded или Any, если это нужно для выбранного сценария
+> 4. Проверить выбранную `general`-конфигурацию
+> 5. Запустить тест конфигураций в Инструментах
+> 6. Включить Secure DNS в Windows:  
+>    IPv4: `8.8.8.8` и доп: `8.8.4.4`  
+>    IPv6: `2001:4860:4860::8888` и доп: `2001:4860:4860::8844`  
+>    Запасной вариант - IPv4: `77.88.8.1` и доп: `1.1.1.1`
+
+<p align="left">
+  <a href="https://star-history.com/#peshk0v/zapret-zen&Date">
+    <picture>
+      <source
+        media="(prefers-color-scheme: dark)"
+        srcset="https://api.star-history.com/svg?repos=peshk0v/zapret-zen&type=Date&theme=dark"
+      />
+      <source
+        media="(prefers-color-scheme: light)"
+        srcset="https://api.star-history.com/svg?repos=peshk0v/zapret-zen&type=Date"
+      />
+      <img
+        alt="Star History Chart"
+        src="https://api.star-history.com/svg?repos=peshk0v/zapret-zen&type=Date"
+      />
+    </picture>
+  </a>
+</p>
