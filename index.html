@@ -27,6 +27,9 @@
             --on-primary: #ffffff;
             --primary-container: #d6e3ff;
             --on-primary-container: #001b3e;
+            
+            --success: #2e7d32;
+            --on-success: #ffffff;
 
             --secondary: #535f70;
             --secondary-container: #d7e3f7;
@@ -49,6 +52,9 @@
                 --on-primary: #00315b;
                 --primary-container: #214873;
                 --on-primary-container: #d6e3ff;
+                
+                --success: #81c995;
+                --on-success: #003314;
 
                 --shadow: rgba(0, 0, 0, 0.3);
             }
@@ -264,6 +270,12 @@
             text-decoration: none;
             transition: background 0.2s, color 0.2s;
             font-weight: 600;
+            cursor: pointer;
+            border: none;
+            background: transparent;
+            width: 100%;
+            text-align: left;
+            font-family: inherit;
         }
 
         .dropdown-item span {
@@ -521,6 +533,187 @@
             border-radius: 50%;
         }
 
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s ease;
+        }
+
+        .modal-overlay.active {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        .modal-content {
+            background: var(--surface-color);
+            border-radius: var(--card-radius);
+            padding: 2.5rem;
+            width: 90%;
+            max-width: 550px;
+            transform: translateY(30px) scale(0.95);
+            transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+            position: relative;
+            box-shadow: 0 24px 48px rgba(0,0,0,0.2);
+        }
+
+        .modal-overlay.active .modal-content {
+            transform: translateY(0) scale(1);
+        }
+
+        .modal-close {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: var(--surface-variant);
+            border: none;
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            color: var(--on-surface);
+            transition: background 0.2s;
+        }
+
+        .modal-close:hover {
+            background: var(--outline);
+            color: #fff;
+        }
+
+        .modal-header {
+            margin-bottom: 2rem;
+        }
+
+        .modal-header h3 {
+            font-size: 1.5rem;
+            font-family: var(--font-display);
+            margin-bottom: 0.5rem;
+        }
+
+        .modal-header p {
+            color: var(--on-surface-variant);
+            font-size: 0.95rem;
+        }
+
+        .mirrors-grid {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .mirror-card {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 1.25rem 1.5rem;
+            border-radius: 20px;
+            border: 2px solid var(--surface-variant);
+            background: var(--bg-color);
+            text-decoration: none;
+            color: var(--on-surface);
+            transition: all 0.25s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .mirror-card:hover {
+            border-color: var(--primary);
+            background: var(--surface-container);
+            transform: translateY(-2px);
+        }
+
+        .mirror-card.recommended {
+            border-color: var(--success);
+            background: rgba(46, 125, 50, 0.05);
+        }
+
+        @media (prefers-color-scheme: dark) {
+            .mirror-card.recommended {
+                background: rgba(129, 201, 149, 0.1);
+            }
+        }
+
+        .mirror-info {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .mirror-icon {
+            width: 42px;
+            height: 42px;
+            border-radius: 12px;
+            background: var(--surface-variant);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--on-surface);
+        }
+        
+        .recommended .mirror-icon {
+            background: var(--success);
+            color: var(--on-success);
+        }
+
+        .mirror-text {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .mirror-name {
+            font-weight: 700;
+            font-size: 1.1rem;
+        }
+
+        .mirror-ping {
+            font-size: 0.85rem;
+            color: var(--on-surface-variant);
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .mirror-ping .material-symbols-outlined {
+            font-size: 14px;
+        }
+
+        .badge-recommended {
+            position: absolute;
+            top: 0;
+            right: 0;
+            background: var(--success);
+            color: var(--on-success);
+            font-size: 0.7rem;
+            font-weight: 800;
+            padding: 4px 12px;
+            border-bottom-left-radius: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            display: none;
+        }
+
+        .mirror-card.recommended .badge-recommended {
+            display: block;
+        }
+
+        .ping-loading {
+            animation: pulse-shadow 1.5s infinite;
+        }
+
         footer {
             border-top: 1px solid var(--surface-variant);
             padding: 3rem 2rem;
@@ -646,7 +839,7 @@
 
     <section class="download-section reveal" id="download">
         <h2 class="section-title" style="margin-bottom: 1rem;">Загрузка приложения</h2>
-        <p style="color: var(--on-surface-variant);">Всегда актуальная версия <span id="latest-version-badge" style="font-weight: 700; color: var(--primary);"></span> напрямую с GitHub</p>
+        <p style="color: var(--on-surface-variant);">Всегда актуальная версия <span id="latest-version-badge" style="font-weight: 700; color: var(--primary);"></span></p>
 
         <div class="download-cards">
             <div class="dl-card reveal delay-1">
@@ -667,14 +860,14 @@
                         <span class="material-symbols-outlined dropdown-arrow">expand_more</span>
                     </button>
                     <div class="dropdown-menu">
-                        <a href="https://github.com/peshk0v/Zapret-Zen/releases/latest" id="link-x64" class="dropdown-item" target="_blank">
+                        <button onclick="openMirrorModal('x64')" class="dropdown-item">
                             Windows x64
                             <span>.zip</span>
-                        </a>
-                        <a href="https://github.com/peshk0v/Zapret-Zen/releases/latest" id="link-arm64" class="dropdown-item" target="_blank">
+                        </button>
+                        <button onclick="openMirrorModal('arm64')" class="dropdown-item">
                             Windows ARM64
                             <span>.zip</span>
-                        </a>
+                        </button>
                     </div>
                 </div>
             </div>
@@ -689,10 +882,10 @@
                         <li>Программа появится в меню «Пуск».</li>
                     </ol>
                 </div>
-                <a href="https://github.com/peshk0v/Zapret-Zen/releases/latest" id="link-installer" target="_blank" class="btn btn-tonal" style="justify-content: center;">
+                <button onclick="openMirrorModal('installer')" class="btn btn-tonal" style="justify-content: center; width: 100%; border: none; font-size: 1rem; font-family: inherit;">
                     <span class="material-symbols-outlined">install_desktop</span>
                     Скачать Инсталлятор
-                </a>
+                </button>
             </div>
         </div>
 
@@ -701,7 +894,7 @@
             <div>
                 <strong>Информация о драйвере WinDivert:</strong>
                 <p style="font-size:0.9rem; margin-top:4px; color: var(--on-surface-variant);">
-                    Приложение использует драйвер WinDivert для перехвата пакетов трафика. Антивирусы могут ошибочно реагировать на него. Скачивайте файлы исключительно из официального репозитория GitHub Releases.
+                    Приложение использует драйвер WinDivert для перехвата пакетов трафика. Антивирусы могут ошибочно реагировать на него. Убедитесь, что скачиваете файлы только из предложенных зеркал.
                 </p>
             </div>
         </div>
@@ -712,14 +905,65 @@
         <p style="margin-top: 8px;">Разработано со вкусом к деталям. Все права на используемые иконки и компоненты сохраняются за их авторами.</p>
     </footer>
 
-    <script>
-        document.addEventListener('DOMContentLoaded', () => {
-            const observerOptions = {
-                root: null,
-                rootMargin: '0px',
-                threshold: 0.15
-            };
+    <div class="modal-overlay" id="mirror-modal" onclick="closeModalOnOutside(event)">
+        <div class="modal-content">
+            <button class="modal-close" onclick="closeMirrorModal()">
+                <span class="material-symbols-outlined">close</span>
+            </button>
+            <div class="modal-header">
+                <h3>Загрузка файла</h3>
+                <p>Выберите наиболее быстрое зеркало для вашего региона.</p>
+            </div>
+            
+            <div class="mirrors-grid">
+                <a id="link-gh" href="#" target="_blank" class="mirror-card" onclick="closeMirrorModal()">
+                    <div class="badge-recommended">Рекомендовано</div>
+                    <div class="mirror-info">
+                        <div class="mirror-icon">
+                            <span class="material-symbols-outlined">code</span>
+                        </div>
+                        <div class="mirror-text">
+                            <span class="mirror-name">GitHub Release</span>
+                            <span class="mirror-ping" id="ping-gh-text">
+                                <span class="material-symbols-outlined">sync</span>
+                                измеряем...
+                            </span>
+                        </div>
+                    </div>
+                    <span class="material-symbols-outlined" style="color: var(--on-surface-variant);">download</span>
+                </a>
 
+                <a id="link-sf" href="#" target="_blank" class="mirror-card" onclick="closeMirrorModal()">
+                    <div class="badge-recommended">Рекомендовано</div>
+                    <div class="mirror-info">
+                        <div class="mirror-icon">
+                            <span class="material-symbols-outlined">dns</span>
+                        </div>
+                        <div class="mirror-text">
+                            <span class="mirror-name">SourceForge</span>
+                            <span class="mirror-ping" id="ping-sf-text">
+                                <span class="material-symbols-outlined">sync</span>
+                                измеряем...
+                            </span>
+                        </div>
+                    </div>
+                    <span class="material-symbols-outlined" style="color: var(--on-surface-variant);">download</span>
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let latestReleaseTag = '';
+        
+        const releaseFiles = {
+            installer: { githubUrl: '', filename: '' },
+            x64: { githubUrl: '', filename: '' },
+            arm64: { githubUrl: '', filename: '' }
+        };
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const observerOptions = { root: null, rootMargin: '0px', threshold: 0.15 };
             const observer = new IntersectionObserver((entries) => {
                 entries.forEach(entry => {
                     if (entry.isIntersecting) {
@@ -728,85 +972,130 @@
                 });
             }, observerOptions);
 
-            const reveals = document.querySelectorAll('.reveal');
-            reveals.forEach(reveal => {
-                observer.observe(reveal);
-            });
+            document.querySelectorAll('.reveal').forEach(reveal => observer.observe(reveal));
 
             const card = document.getElementById('parallax-card');
-            
             card.addEventListener('mousemove', (e) => {
                 const rect = card.getBoundingClientRect();
-                const x = e.clientX - rect.left;
-                const y = e.clientY - rect.top;
-                
-                const xPct = x / rect.width - 0.5;
-                const yPct = y / rect.height - 0.5;
-                
-                const maxRotation = 12;
-                
-                card.style.transform = `rotateY(${xPct * maxRotation}deg) rotateX(${yPct * -maxRotation}deg) scale3d(1.02, 1.02, 1.02)`;
+                const xPct = (e.clientX - rect.left) / rect.width - 0.5;
+                const yPct = (e.clientY - rect.top) / rect.height - 0.5;
+                card.style.transform = `rotateY(${xPct * 12}deg) rotateX(${yPct * -12}deg) scale3d(1.02, 1.02, 1.02)`;
             });
-
             card.addEventListener('mouseleave', () => {
                 card.style.transform = `rotateY(0deg) rotateX(0deg) scale3d(1, 1, 1)`;
                 card.style.transition = 'transform 0.5s ease-out';
-                setTimeout(() => {
-                    card.style.transition = 'transform 0.1s ease-out';
-                }, 500);
+                setTimeout(() => card.style.transition = 'transform 0.1s ease-out', 500);
             });
 
             const dropdown = document.getElementById('portable-dropdown');
             const dropdownToggle = dropdown.querySelector('.dropdown-toggle');
-            
             dropdownToggle.addEventListener('click', (e) => {
                 e.preventDefault();
                 dropdown.classList.toggle('active');
             });
-
             document.addEventListener('click', (e) => {
-                if (!dropdown.contains(e.target)) {
-                    dropdown.classList.remove('active');
-                }
+                if (!dropdown.contains(e.target)) dropdown.classList.remove('active');
             });
-
-            async function fetchLatestRelease() {
-                try {
-                    const response = await fetch('https://api.github.com/repos/peshk0v/Zapret-Zen/releases/latest');
-                    if (!response.ok) throw new Error('API Rate limit or network issue');
-                    
-                    const releaseData = await response.json();
-                    
-                    const versionBadge = document.getElementById('latest-version-badge');
-                    if(versionBadge && releaseData.tag_name) {
-                        versionBadge.textContent = `(${releaseData.tag_name})`;
-                    }
-
-                    releaseData.assets.forEach(asset => {
-                        const name = asset.name.toLowerCase();
-                        
-                        if (name.includes('install') && name.endsWith('.exe')) {
-                            document.getElementById('link-installer').href = asset.browser_download_url;
-                            document.getElementById('link-installer').removeAttribute('target');
-                        }
-                        
-                        if (name.includes('portable') && name.includes('x64') && name.endsWith('.zip')) {
-                            document.getElementById('link-x64').href = asset.browser_download_url;
-                            document.getElementById('link-x64').removeAttribute('target');
-                        }
-                        
-                        if (name.includes('portable') && name.includes('arm64') && name.endsWith('.zip')) {
-                            document.getElementById('link-arm64').href = asset.browser_download_url;
-                            document.getElementById('link-arm64').removeAttribute('target');
-                        }
-                    });
-                } catch (error) {
-                    console.error(error);
-                }
-            }
 
             fetchLatestRelease();
         });
+
+        async function fetchLatestRelease() {
+            try {
+                const response = await fetch('https://api.github.com/repos/peshk0v/Zapret-Zen/releases/latest');
+                if (!response.ok) return;
+                const releaseData = await response.json();
+                
+                latestReleaseTag = releaseData.tag_name;
+                
+                const versionBadge = document.getElementById('latest-version-badge');
+                if (versionBadge && latestReleaseTag) {
+                    versionBadge.textContent = `(${latestReleaseTag})`;
+                }
+
+                releaseData.assets.forEach(asset => {
+                    const name = asset.name.toLowerCase();
+                    if (name.includes('install') && name.endsWith('.exe')) {
+                        releaseFiles.installer = { githubUrl: asset.browser_download_url, filename: asset.name };
+                    }
+                    if (name.includes('portable') && name.includes('x64') && name.endsWith('.zip')) {
+                        releaseFiles.x64 = { githubUrl: asset.browser_download_url, filename: asset.name };
+                    }
+                    if (name.includes('portable') && name.includes('arm64') && name.endsWith('.zip')) {
+                        releaseFiles.arm64 = { githubUrl: asset.browser_download_url, filename: asset.name };
+                    }
+                });
+            } catch (error) {
+                console.error(error);
+            }
+        }
+
+        function measurePing(url) {
+            return new Promise((resolve) => {
+                const start = performance.now();
+                const img = new Image();
+                const timeout = setTimeout(() => resolve(9999), 3000);
+                
+                img.onload = img.onerror = () => {
+                    clearTimeout(timeout);
+                    resolve(Math.round(performance.now() - start));
+                };
+                img.src = `${url}?rand=${Math.random()}`;
+            });
+        }
+
+        async function openMirrorModal(type) {
+            const modal = document.getElementById('mirror-modal');
+            const fileData = releaseFiles[type];
+            
+            if (!fileData || !fileData.filename) {
+                window.open('https://github.com/peshk0v/Zapret-Zen/releases/latest', '_blank');
+                return;
+            }
+
+            const ghLink = document.getElementById('link-gh');
+            const sfLink = document.getElementById('link-sf');
+            const ghPingText = document.getElementById('ping-gh-text');
+            const sfPingText = document.getElementById('ping-sf-text');
+
+            ghLink.classList.remove('recommended');
+            sfLink.classList.remove('recommended');
+            
+            ghPingText.innerHTML = `<span class="material-symbols-outlined ping-loading">sync</span> измеряем...`;
+            sfPingText.innerHTML = `<span class="material-symbols-outlined ping-loading">sync</span> измеряем...`;
+
+            ghLink.href = fileData.githubUrl;
+            
+            sfLink.href = `https://sourceforge.net/projects/zapret-zen/files/${encodeURIComponent(latestReleaseTag)}/${encodeURIComponent(fileData.filename)}/download`;
+
+            modal.classList.add('active');
+
+            const [ghPing, sfPing] = await Promise.all([
+                measurePing('https://github.com/favicon.ico'),
+                measurePing('https://sourceforge.net/favicon.ico')
+            ]);
+
+            ghPingText.innerHTML = `<span class="material-symbols-outlined">network_ping</span> ${ghPing < 9999 ? ghPing + ' ms' : 'ошибка'}`;
+            sfPingText.innerHTML = `<span class="material-symbols-outlined">network_ping</span> ${sfPing < 9999 ? sfPing + ' ms' : 'ошибка'}`;
+
+            if (ghPing < 9999 || sfPing < 9999) {
+                if (ghPing <= sfPing) {
+                    ghLink.classList.add('recommended');
+                } else {
+                    sfLink.classList.add('recommended');
+                }
+            }
+        }
+
+        function closeMirrorModal() {
+            document.getElementById('mirror-modal').classList.remove('active');
+        }
+
+        function closeModalOnOutside(event) {
+            if (event.target === document.getElementById('mirror-modal')) {
+                closeMirrorModal();
+            }
+        }
     </script>
 </body>
 </html>
