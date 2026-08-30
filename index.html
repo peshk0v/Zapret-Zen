@@ -766,10 +766,24 @@
         <p>Удобная и быстрая утилита для обхода блокировок на Windows в дизайне Material You. Поддержка пресетов, модов и умной автонастройки.</p>
         
         <div class="hero-cta">
-            <a href="#download" class="btn btn-primary">
-                <span class="material-symbols-outlined">download</span>
-                Скачать для Windows
-            </a>
+            <div class="dropdown" id="hero-dropdown">
+                <button class="btn btn-primary dropdown-toggle">
+                    <span class="material-symbols-outlined">download</span>
+                    Скачать для Windows
+                    <span class="material-symbols-outlined dropdown-arrow">expand_more</span>
+                </button>
+                <div class="dropdown-menu">
+                    <a href="#download" class="dropdown-item">
+                        Просто скачать
+                        <span class="material-symbols-outlined" style="font-size: 1.2rem; color: var(--on-surface-variant);">download</span>
+                    </a>
+                    <a href="https://github-store.org/app?repo=peshk0v/Zapret-Zen" target="_blank" class="dropdown-item">
+                        Скачать через Komi Store
+                        <span class="material-symbols-outlined" style="font-size: 1.2rem; color: var(--on-surface-variant);">storefront</span>
+                    </a>
+                </div>
+            </div>
+            
             <a href="https://t.me/zapzen" target="_blank" class="btn btn-tonal">
                 <span class="material-symbols-outlined">send</span>
                 Telegram Канал
@@ -987,14 +1001,31 @@
                 setTimeout(() => card.style.transition = 'transform 0.1s ease-out', 500);
             });
 
-            const dropdown = document.getElementById('portable-dropdown');
-            const dropdownToggle = dropdown.querySelector('.dropdown-toggle');
-            dropdownToggle.addEventListener('click', (e) => {
-                e.preventDefault();
-                dropdown.classList.toggle('active');
+            const dropdowns = document.querySelectorAll('.dropdown');
+
+            dropdowns.forEach(dropdown => {
+                const dropdownToggle = dropdown.querySelector('.dropdown-toggle');
+                if (dropdownToggle) {
+                    dropdownToggle.addEventListener('click', (e) => {
+                        e.preventDefault();
+                        dropdowns.forEach(d => {
+                            if (d !== dropdown) d.classList.remove('active');
+                        });
+                        dropdown.classList.toggle('active');
+                    });
+                }
             });
+
+            // Закрытие при клике вне меню или при клике на ссылку-якорь внутри меню
             document.addEventListener('click', (e) => {
-                if (!dropdown.contains(e.target)) dropdown.classList.remove('active');
+                dropdowns.forEach(dropdown => {
+                    const isClickInside = dropdown.contains(e.target);
+                    const isLinkClick = e.target.closest('a.dropdown-item');
+                    
+                    if (!isClickInside || isLinkClick) {
+                        dropdown.classList.remove('active');
+                    }
+                });
             });
 
             fetchLatestRelease();
