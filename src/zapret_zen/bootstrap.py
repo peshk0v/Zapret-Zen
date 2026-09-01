@@ -6,6 +6,7 @@ import secrets
 from typing import Any
 
 from zapret_zen.domain import AppPaths
+from zapret_zen.platform import IS_WINDOWS
 from zapret_zen.runtime_env import development_install_root, is_packaged_runtime, packaged_install_root, packaged_resource_root
 from zapret_zen.ui.theme import load_theme_registry
 from zapret_zen.services.autostart import AutostartManager
@@ -54,9 +55,12 @@ def bootstrap_application() -> ApplicationContext:
     is_portable = not is_packaged_runtime() or portable_flag.exists()
     if is_portable:
         data_root = install_root
-    else:
+    elif IS_WINDOWS:
         appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
         data_root = Path(appdata) / "Zapret-Zen"
+    else:
+        xdg_data = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+        data_root = Path(xdg_data) / "Zapret-Zen"
 
     runtime_dir = install_root / "runtime"
     ui_assets_dir = install_root / "ui_assets"

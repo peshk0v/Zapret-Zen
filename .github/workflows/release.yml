@@ -129,10 +129,65 @@ jobs:
           path: dist_nuitka/main.dist/**
           if-no-files-found: error
 
+  build-linux-x64:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Clean workspace
+        run: |
+          rm -rf dist_nuitka .nuitka_staging dist_linux_packages
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        env:
+          PIP_PREFER_BINARY: "1"
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .[dev]
+          sudo apt-get update
+          sudo apt-get install -y rpm dpkg-dev file
+
+      - name: Build Nuitka Linux
+        run: |
+          tag="${{ github.ref_name }}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+          fi
+          version="${tag#v}"
+          VERSION="$version" PYTHON=python ./scripts/build_nuitka.sh
+
+      - name: Package Linux (.tar.gz, .deb, .rpm)
+        run: |
+          tag="${{ github.ref_name }}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+          fi
+          version="${tag#v}"
+          VERSION="$version" PYTHON=python ./scripts/package_linux.sh
+
+      - name: Upload Linux packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: |
+            dist_linux_packages/*.tar.gz
+            dist_linux_packages/*.deb
+            dist_linux_packages/*.rpm
+          if-no-files-found: error
+
   package-and-release:
     needs:
       - build-windows-x64
       - build-windows-arm64
+      - build-linux-x64
     runs-on: windows-latest
     permissions:
       contents: write
@@ -181,6 +236,12 @@ jobs:
         with:
           name: nuitka-win-arm64
           path: .artifacts/win_arm64
+
+      - name: Download Linux packages
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-packages
+          path: .artifacts/linux
 
       - name: Resolve version
         id: meta
@@ -237,6 +298,14 @@ jobs:
           $installer = Get-ChildItem ".\dist_installer\install_zapretzen_*_universal.exe" | Select-Object -First 1
           if ($installer) {
             Copy-Item $installer.FullName ".\release_$version\" -Force
+          }
+
+      - name: Copy Linux packages into release folder
+        shell: pwsh
+        run: |
+          $version = "${{ steps.meta.outputs.version }}"
+          if (Test-Path ".\.artifacts\linux") {
+            Copy-Item ".\.artifacts\linux\*" ".\release_$version\" -Force
           }
 
       - name: Check if release exists

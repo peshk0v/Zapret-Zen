@@ -5,14 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "zapret-zen"
 version = "0.0.0.dev0"
-description = "Windows desktop hub for managing external network utilities and configuration packs."
+description = "Cross-platform desktop hub for managing external network utilities and configuration packs."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "PySide6>=6.7",
     "certifi>=2024.0.0",
     "cryptography>=46.0.0",
-    "pydivert>=3.1.1",
+    "pydivert>=3.1.1; sys_platform == 'win32'",
     "pypresence>=4.6",
 ]
 

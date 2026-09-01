@@ -25,6 +25,20 @@ from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 
 from zapret_zen.domain import ComponentDefinition, ComponentState
+from zapret_zen.platform import (
+    IS_WINDOWS,
+    IS_LINUX,
+    dev_null,
+    get_creation_flags,
+    get_startup_info,
+    has_zapret_rust,
+    is_image_running as _platform_is_image_running,
+    is_admin,
+    kill_image_by_name as _platform_kill_image,
+    kill_process_by_pid as _platform_kill_pid,
+    zapret_binary_name,
+    zapret_rust_binary_name,
+)
 from zapret_zen.runtime_env import is_packaged_runtime
 from zapret_zen.services.github_network import GitHubNetworkClient, is_recoverable_github_error
 from zapret_zen.services.logging_service import LoggingManager
@@ -93,6 +107,10 @@ _TORRENT_PROCESS_NAMES = (
 
 class _WindowsJob:
     def __init__(self) -> None:
+        if not IS_WINDOWS:
+            self.kernel32 = None
+            self.job = None
+            return
         self.kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         self.job = self.kernel32.CreateJobObjectW(None, None)
         if not self.job:
@@ -144,7 +162,7 @@ class _WindowsJob:
         )
 
     def assign_pid(self, pid: int) -> None:
-        if not self.job:
+        if not self.job or not IS_WINDOWS:
             return
         PROCESS_ALL_ACCESS = 0x1F0FFF
         handle = self.kernel32.OpenProcess(PROCESS_ALL_ACCESS, False, pid)
@@ -173,18 +191,11 @@ class ProcessManager:
         self._log_streams: dict[str, Any] = {}
         self._telegram_proxy_launch_info: dict[str, Any] | None = None
         self._diagnostic_runtime_override = False
-        self._job = _WindowsJob() if sys.platform.startswith("win") else None
+        self._job = _WindowsJob() if IS_WINDOWS else None
         self.github = GitHubNetworkClient(logging, recovery_runner=self.with_github_connectivity_recovery)
-        self._creationflags = 0
-        self._startupinfo: subprocess.STARTUPINFO | None = None
+        self._creationflags = get_creation_flags()
+        self._startupinfo = get_startup_info()
         self._app_started_services: set[str] = set()
-        if sys.platform.startswith("win"):
-            self._creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
-            startup = subprocess.STARTUPINFO()
-            startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startup.wShowWindow = 0
-            self._startupinfo = startup
-
         self.vpn_detector = VpnDetector(logging)
         self.runtime_builder = ZapretRuntimeBuilder(storage, logging, settings)
         self._batch_current_bundle_id: str | None = None
@@ -303,7 +314,10 @@ class ProcessManager:
         for component in self.list_components():
             state = self._states.get(component.id, ComponentState(component_id=component.id))
             if component.id == "zapret":
-                was_running = self._is_image_running("winws.exe")
+                if IS_LINUX:
+                    was_running = _platform_is_image_running("nfqws")
+                else:
+                    was_running = _platform_is_image_running("winws.exe")
                 state.status = "running" if was_running else "stopped"
                 state.pid = None
             elif component.id == "tg-ws-proxy":
@@ -316,8 +330,12 @@ class ProcessManager:
                     state.status = "stopped"
                     state.pid = None
             elif component.id == "dns-manager":
-                active = self._dns_manager_is_active()
-                state.status = "running" if active else "stopped"
+                if IS_LINUX:
+                    state.status = "unavailable"
+                    state.last_error = "DNS Manager is not supported on Linux."
+                else:
+                    active = self._dns_manager_is_active()
+                    state.status = "running" if active else "stopped"
                 state.pid = None
             else:
                 process = self._processes.get(component.id)
@@ -349,6 +367,15 @@ class ProcessManager:
             self._invalidate_state_cache()
             return state
         if component.id == "dns-manager":
+            if IS_LINUX:
+                state = ComponentState(
+                    component_id=component_id,
+                    status="error",
+                    last_error="DNS Manager is not supported on Linux.",
+                )
+                self._states[component_id] = state
+                self._invalidate_state_cache()
+                return state
             state = self._start_dns_manager(component_id)
             self._invalidate_state_cache()
             return state
@@ -379,6 +406,8 @@ class ProcessManager:
         state = self._states.get(component_id, ComponentState(component_id=component_id))
 
         if component_id == "zapret":
+            if IS_LINUX:
+                return self._stop_zapret_linux(component_id)
             active_runtime = self._current_zapret_runtime
             self._force_stop_zapret_runtime()
             self._close_source_log_stream("zapret")
@@ -406,10 +435,13 @@ class ProcessManager:
                         process.wait(timeout=2)
                     except subprocess.TimeoutExpired:
                         pass
-            if process and process.pid:
+            if IS_WINDOWS and process and process.pid:
                 self._run_quiet(["taskkill", "/PID", str(process.pid), "/F"])
             self._processes.pop(component_id, None)
-            self._kill_image("TgWsProxy_windows.exe")
+            if IS_WINDOWS:
+                self._kill_image("TgWsProxy_windows.exe")
+            else:
+                _platform_kill_image("tg-ws-proxy")
             self._close_source_log_stream("tg-ws-proxy")
             state.status = "stopped"
             state.pid = None
@@ -419,6 +451,12 @@ class ProcessManager:
             return state
 
         if component_id == "dns-manager":
+            if IS_LINUX:
+                state = ComponentState(component_id=component_id, status="stopped")
+                state.last_error = "DNS Manager is not supported on Linux."
+                self._states[component_id] = state
+                self._invalidate_state_cache()
+                return state
             state = self._stop_dns_manager(component_id)
             self._invalidate_state_cache()
             return state
@@ -478,6 +516,33 @@ class ProcessManager:
                 started.append(state)
         return started
 
+    def _stop_zapret_linux(self, component_id: str) -> ComponentState:
+        state = self._states.get(component_id, ComponentState(component_id=component_id))
+        process = self._processes.get(component_id)
+        if process and process.poll() is None:
+            try:
+                process.terminate()
+                process.wait(timeout=4)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    pass
+        _platform_kill_image("nfqws")
+        self._close_source_log_stream("zapret")
+        self._processes.pop(component_id, None)
+        self._current_zapret_runtime = None
+        still_running = _platform_is_image_running("nfqws")
+        state.status = "stopped" if not still_running else "running"
+        state.pid = None
+        if state.status != "stopped":
+            state.last_error = "Failed to stop nfqws"
+        self._states[component_id] = state
+        self.logging.log("info", "Zapret (Linux) stopped")
+        self._invalidate_state_cache()
+        return state
+
     def stop_all(self) -> list[ComponentState]:
         stopped = [self.stop_component(component.id) for component in self.list_components()]
         self._cleanup_merged_runtime()
@@ -507,6 +572,88 @@ class ProcessManager:
         return target
 
     def _start_zapret(self, component_id: str) -> ComponentState:
+        if IS_LINUX:
+            return self._start_zapret_rust(component_id)
+        return self._start_zapret_winws(component_id)
+
+    def _start_zapret_rust(self, component_id: str) -> ComponentState:
+        self.stop_component(component_id)
+
+        runtime_dir = self.storage.paths.runtime_dir / "zapret-discord-youtube-rust"
+        binary = runtime_dir / zapret_rust_binary_name()
+        if not binary.exists():
+            binary = self.storage.paths.runtime_dir / "bin" / zapret_rust_binary_name()
+        if not binary.exists():
+            state = ComponentState(
+                component_id=component_id,
+                status="error",
+                last_error=f"{zapret_rust_binary_name()} not found. Install zapret-discord-youtube-rust into runtime/zapret-discord-youtube-rust/.",
+            )
+            self._states[component_id] = state
+            self._invalidate_state_cache()
+            return state
+
+        selected_option = self._resolve_selected_general_option()
+        strategy_name = ""
+        if selected_option:
+            strategy_name = Path(selected_option["path"]).stem
+
+        cmd = [str(binary)]
+        settings = self.settings.get()
+        interface = (getattr(settings, "zapret_interface", "any") or "any").strip()
+        if interface:
+            cmd.extend(["--interface", interface])
+        if strategy_name:
+            cmd.extend(["--strategy", strategy_name])
+
+        game_mode = (settings.zapret_game_filter_mode or "disabled").strip().lower()
+        if game_mode in ("all", "tcp", "tcpudp"):
+            cmd.append("--gamefiltertcp")
+            cmd.append("--gamefilterudp")
+        elif game_mode == "tcp":
+            cmd.append("--gamefiltertcp")
+        elif game_mode == "udp":
+            cmd.append("--gamefilterudp")
+
+        self.logging.log("info", "Zapret-rust starting", command=" ".join(cmd))
+        process = subprocess.Popen(
+            cmd,
+            cwd=str(runtime_dir),
+            stdout=self._open_source_log_stream("zapret"),
+            stderr=subprocess.STDOUT,
+        )
+        if self._job:
+            self._job.assign_pid(process.pid)
+        self._processes[component_id] = process
+
+        running = False
+        for _ in range(24):
+            if _platform_is_image_running("nfqws"):
+                running = True
+                break
+            time.sleep(0.25)
+
+        if running:
+            state = ComponentState(component_id=component_id, status="running", pid=process.pid)
+            self.logging.log("info", "Zapret-rust started", binary=str(binary))
+        else:
+            self._close_source_log_stream("zapret")
+            log_hint = self._recent_source_log_error("zapret")
+            error_message = log_hint or (
+                "zapret-rust did not start. Ensure nfqws has CAP_NET_ADMIN "
+                "(sudo setcap cap_net_admin+ep $(which nfqws)) and nftables or iptables is installed."
+            )
+            state = ComponentState(
+                component_id=component_id,
+                status="error",
+                last_error=error_message,
+            )
+            self.logging.log("error", "Zapret-rust failed to start", error=error_message)
+        self._states[component_id] = state
+        self._invalidate_state_cache()
+        return state
+
+    def _start_zapret_winws(self, component_id: str) -> ComponentState:
         # всегда перезапускаем, чтобы не было конфликтов со сторонними процессами
         self.stop_component(component_id)
         selected_option = self._resolve_selected_general_option()
@@ -797,7 +944,7 @@ class ProcessManager:
         return []
 
     def _apply_vpn_priority_to_command(self, command: list[str], *, lists_dir: Path) -> list[str]:
-        if not command or not sys.platform.startswith("win"):
+        if not command or not IS_WINDOWS:
             return command
         try:
             vpn_data = self.vpn_detector.detect_vpn_priority_context()
@@ -903,6 +1050,8 @@ class ProcessManager:
         return ranges
 
     def _detect_vpn_priority_context(self) -> dict[str, list[str]]:
+        if not IS_WINDOWS:
+            return {"adapter_indexes": [], "remote_ips": []}
         script = r"""
 $patterns = @('nekobox','nekoray','v2rayn','xray','xrayw','sing-box','singbox','clash','mihomo','hiddify','outline','wireguard','openvpn','amnezia','warp')
 $adapterPatterns = @('wintun','wireguard','openvpn','tap-','tap_windows','vpn','v2ray','xray','nekobox','nekoray','sing-box','clash','mihomo','tun')
@@ -965,6 +1114,8 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
         }
 
     def _run_powershell_json(self, script: str) -> str:
+        if not IS_WINDOWS:
+            return ""
         startup = self._startupinfo
         proc = subprocess.run(
             [
@@ -1050,6 +1201,8 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
     QUIC_BLOCK_RULE_NAME = "Zapret-Zen Block QUIC"
 
     def _quic_block_rule_exists(self) -> bool:
+        if not IS_WINDOWS:
+            return False
         try:
             proc = self._run_quiet([
                 "netsh", "advfirewall", "firewall", "show", "rule",
@@ -1061,6 +1214,8 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
         return proc.returncode == 0
 
     def set_quic_blocked(self, blocked: bool) -> bool:
+        if not IS_WINDOWS:
+            return True
         exists = self._quic_block_rule_exists()
         if blocked == exists:
             return True
@@ -1164,7 +1319,10 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
         if secret != settings.tg_proxy_secret:
             settings = self.settings.update(tg_proxy_secret=secret)
         # подчищаем старый процесс, если он остался в трее
-        self._kill_image("TgWsProxy_windows.exe")
+        if IS_WINDOWS:
+            self._kill_image("TgWsProxy_windows.exe")
+        else:
+            _platform_kill_image("tg-ws-proxy")
         try:
             (self.storage.paths.logs_dir / "tg_worker_error.log").unlink(missing_ok=True)
         except Exception:
@@ -1768,7 +1926,10 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
         )
 
     def _prepare_diagnostic_runtime(self, *, general_id: str, ipset_mode: str, game_mode: str) -> bool:
-        original_running = self._is_image_running("winws.exe")
+        if IS_LINUX:
+            original_running = _platform_is_image_running("nfqws")
+        else:
+            original_running = self._is_image_running("winws.exe")
         if original_running:
             self.stop_component("zapret")
         self.settings.update(
@@ -2137,12 +2298,16 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
 
     def _capture_github_recovery_snapshot(self) -> dict[str, object]:
         settings = self.settings.get()
+        if IS_LINUX:
+            was_running = _platform_is_image_running("nfqws")
+        else:
+            was_running = self._is_image_running("winws.exe")
         return {
             "selected_zapret_general": settings.selected_zapret_general,
             "zapret_ipset_mode": settings.zapret_ipset_mode,
             "zapret_game_filter_mode": settings.zapret_game_filter_mode,
             "zapret_udp_exclude_ports": settings.zapret_udp_exclude_ports,
-            "was_running": self._is_image_running("winws.exe"),
+            "was_running": was_running,
         }
 
     def _restore_github_recovery_snapshot(self, snapshot: dict[str, object], *, restart: bool) -> None:
@@ -2324,6 +2489,7 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
         curl_path = shutil.which("curl.exe") or shutil.which("curl")
         if not curl_path:
             return 0
+        null_device = dev_null()
         proc = self._run_quiet(
             [
                 curl_path,
@@ -2334,7 +2500,7 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
                 "-m",
                 "3",
                 "-o",
-                "NUL",
+                null_device,
                 "-w",
                 "%{http_code}",
                 "--show-error",
@@ -2353,7 +2519,10 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
     def _ping_target(self, host: str) -> bool:
         if not host:
             return False
-        proc = self._run_quiet(["ping", "-n", "1", "-w", "1200", host])
+        if IS_WINDOWS:
+            proc = self._run_quiet(["ping", "-n", "1", "-w", "1200", host])
+        else:
+            proc = self._run_quiet(["ping", "-c", "1", "-W", "1", host])
         return proc.returncode == 0
 
     def _build_zapret_args(self, bin_dir: Path, lists_dir: Path) -> list[str]:
@@ -2548,12 +2717,10 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
                 target.write_text(content, encoding="utf-8")
 
     def _is_image_running(self, image_name: str) -> bool:
-        proc = self._run_quiet(["tasklist", "/FI", f"IMAGENAME eq {image_name}"])
-        output = (proc.stdout or "").lower()
-        return image_name.lower() in output
+        return _platform_is_image_running(image_name)
 
     def _kill_image(self, image_name: str) -> None:
-        self._run_quiet(["taskkill", "/IM", image_name, "/F", "/T"])
+        _platform_kill_image(image_name)
 
     def _force_stop_zapret_runtime(self) -> None:
         process = self._processes.get("zapret")
@@ -2567,19 +2734,28 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
                 except Exception:
                     pass
         if process and process.pid:
-            self._run_quiet(["taskkill", "/PID", str(process.pid), "/F", "/T"])
-        self._cleanup_zapret_driver_services(self._current_zapret_runtime)
-        for _ in range(8):
-            self._kill_image("winws.exe")
-            if not self._is_image_running("winws.exe"):
-                break
-            time.sleep(0.35)
+            _platform_kill_pid(process.pid)
+
+        if IS_WINDOWS:
+            self._cleanup_zapret_driver_services(self._current_zapret_runtime)
+            for _ in range(8):
+                self._kill_image("winws.exe")
+                if not self._is_image_running("winws.exe"):
+                    break
+                time.sleep(0.35)
+        else:
+            for _ in range(4):
+                _platform_kill_image("nfqws")
+                if not _platform_is_image_running("nfqws"):
+                    break
+                time.sleep(0.35)
+
         self._processes.pop("zapret", None)
         self._current_zapret_runtime = None
 
     def _reset_active_runtime_dir(self, active_root: Path) -> None:
         driver_marker = active_root / ".driver_path_in_use"
-        if driver_marker.exists() and (active_root / "bin" / "WinDivert64.sys").exists():
+        if IS_WINDOWS and driver_marker.exists() and (active_root / "bin" / "WinDivert64.sys").exists():
             self._cleanup_zapret_driver_services(active_root)
             if self._driver_service_references_runtime(active_root):
                 self.logging.log(
@@ -2627,15 +2803,21 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
             self._reset_active_runtime_dir(candidate)
 
     def _zapret_service_exists(self) -> bool:
+        if not IS_WINDOWS:
+            return False
         proc = self._run_quiet(["sc", "query", "zapret"])
         return proc.returncode == 0
 
     def _track_active_driver_services(self) -> None:
+        if not IS_WINDOWS:
+            return
         for service_name in _ZAPRET_DRIVER_SERVICE_NAMES:
             if self._service_exists(service_name):
                 self._app_started_services.add(service_name)
 
     def _cleanup_zapret_driver_services(self, runtime_root: Path | None = None) -> None:
+        if not IS_WINDOWS:
+            return
         for service_name in _ZAPRET_DRIVER_SERVICE_NAMES:
             if not self._service_exists(service_name):
                 self._app_started_services.discard(service_name)
@@ -2695,10 +2877,14 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
         return False
 
     def _service_exists(self, service_name: str) -> bool:
+        if not IS_WINDOWS:
+            return False
         proc = self._run_quiet(["sc", "query", service_name])
         return proc.returncode == 0
 
     def _service_state(self, service_name: str) -> str:
+        if not IS_WINDOWS:
+            return ""
         proc = self._run_quiet(["sc", "query", service_name])
         if proc.returncode != 0:
             return ""
@@ -2710,6 +2896,8 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
         return ""
 
     def _service_image_path(self, service_name: str) -> str:
+        if not IS_WINDOWS:
+            return ""
         proc = self._run_quiet(["sc", "qc", service_name])
         if proc.returncode != 0:
             return ""
@@ -2796,24 +2984,48 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
             pass
 
     def _is_telegram_running(self) -> bool:
-        for image_name in ("Telegram.exe", "Telegram Desktop.exe"):
-            if self._is_image_running(image_name):
-                return True
-        return False
+        if IS_WINDOWS:
+            for image_name in ("Telegram.exe", "Telegram Desktop.exe"):
+                if self._is_image_running(image_name):
+                    return True
+            return False
+        return _platform_is_image_running("telegram-desktop")
 
     def _telegram_desktop_candidates(self) -> list[Path]:
-        candidates = [
-            Path(os.environ.get("APPDATA", "")) / "Telegram Desktop" / "Telegram.exe",
-            Path(os.environ.get("LOCALAPPDATA", "")) / "Telegram Desktop" / "Telegram.exe",
-            Path(os.environ.get("ProgramFiles", "")) / "Telegram Desktop" / "Telegram.exe",
-            Path(os.environ.get("ProgramFiles(x86)", "")) / "Telegram Desktop" / "Telegram.exe",
-            Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WindowsApps" / "Telegram.exe",
-            Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WindowsApps" / "Telegram Desktop.exe",
-        ]
-        for image_name in ("Telegram.exe", "telegram.exe", "Telegram Desktop.exe"):
-            resolved = shutil.which(image_name)
-            if resolved:
-                candidates.append(Path(resolved))
+        candidates: list[Path] = []
+        if IS_WINDOWS:
+            candidates.extend([
+                Path(os.environ.get("APPDATA", "")) / "Telegram Desktop" / "Telegram.exe",
+                Path(os.environ.get("LOCALAPPDATA", "")) / "Telegram Desktop" / "Telegram.exe",
+                Path(os.environ.get("ProgramFiles", "")) / "Telegram Desktop" / "Telegram.exe",
+                Path(os.environ.get("ProgramFiles(x86)", "")) / "Telegram Desktop" / "Telegram.exe",
+                Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WindowsApps" / "Telegram.exe",
+                Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WindowsApps" / "Telegram Desktop.exe",
+            ])
+            for image_name in ("Telegram.exe", "telegram.exe", "Telegram Desktop.exe"):
+                resolved = shutil.which(image_name)
+                if resolved:
+                    candidates.append(Path(resolved))
+        else:
+            for name in ("telegram-desktop", "Telegram"):
+                resolved = shutil.which(name)
+                if resolved:
+                    candidates.append(Path(resolved))
+            xdg_dirs = [
+                Path.home() / ".local" / "share" / "applications",
+                Path("/usr/share/applications"),
+                Path("/usr/local/share/applications"),
+            ]
+            for d in xdg_dirs:
+                desktop_file = d / "telegram.desktop"
+                if desktop_file.exists():
+                    for line in desktop_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+                        if line.lower().startswith("exec="):
+                            exec_val = line.split("=", 1)[1].strip().split()[0]
+                            p = Path(exec_val)
+                            if p.exists():
+                                candidates.append(p)
+                            break
         unique: list[Path] = []
         seen: set[str] = set()
         for candidate in candidates:

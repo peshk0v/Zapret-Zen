@@ -49,6 +49,7 @@ class AppSettings:
     tg_proxy_media_mode: str = "default"
     tg_proxy_tuning_done: bool = False
     selected_zapret_general: str = ""
+    zapret_interface: str = "any"
     favorite_zapret_generals: list[str] = field(default_factory=list)
     general_autotest_done: bool = False
     selected_service_ids: list[str] = field(default_factory=list)

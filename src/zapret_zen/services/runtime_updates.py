@@ -7,6 +7,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Callable
 
+from zapret_zen.platform import IS_WINDOWS
 from zapret_zen.services.github_network import GitHubNetworkClient
 from zapret_zen.services.logging_service import LoggingManager
 from zapret_zen.services.storage import StorageManager
@@ -36,7 +37,12 @@ class RuntimeUpdateManager:
         self._tg_running = tg_running
 
     def fetch_latest_zapret_release(self) -> dict[str, str]:
-        api_url = "https://api.github.com/repos/Flowseal/zapret-discord-youtube/releases/latest"
+        if IS_WINDOWS:
+            api_url = "https://api.github.com/repos/Flowseal/zapret-discord-youtube/releases/latest"
+            fallback_zipball = "https://codeload.github.com/Flowseal/zapret-discord-youtube/zip/refs/heads/main"
+        else:
+            api_url = "https://api.github.com/repos/Sergeydigl3/zapret-discord-youtube-rust/releases/latest"
+            fallback_zipball = "https://codeload.github.com/Sergeydigl3/zapret-discord-youtube-rust/zip/refs/heads/main"
         try:
             payload = self.github.github_json(api_url, timeout=20, purpose="zapret-release-metadata")
             if not isinstance(payload, dict):
@@ -47,17 +53,28 @@ class RuntimeUpdateManager:
                 "latest_version": "",
                 "asset_url": "",
                 "asset_name": "",
-                "zipball_url": "https://codeload.github.com/Flowseal/zapret-discord-youtube/zip/refs/heads/main",
+                "zipball_url": fallback_zipball,
             }
         latest_version = str(payload.get("tag_name") or payload.get("name") or "").strip().lstrip("v")
-        asset = next(
-            (
-                item
-                for item in list(payload.get("assets") or [])
-                if isinstance(item, dict) and str(item.get("name", "")).lower().endswith(".zip")
-            ),
-            None,
-        )
+        asset = None
+        if IS_WINDOWS:
+            asset = next(
+                (
+                    item
+                    for item in list(payload.get("assets") or [])
+                    if isinstance(item, dict) and str(item.get("name", "")).lower().endswith(".zip")
+                ),
+                None,
+            )
+        else:
+            asset = next(
+                (
+                    item
+                    for item in list(payload.get("assets") or [])
+                    if isinstance(item, dict) and "linux" in str(item.get("name", "")).lower()
+                ),
+                None,
+            )
         return {
             "latest_version": latest_version,
             "asset_url": str((asset or {}).get("browser_download_url", "")),
@@ -90,6 +107,12 @@ class RuntimeUpdateManager:
         current_version = self.storage._detect_zapret_version()
         if latest_version and current_version == latest_version:
             return {"status": "up-to-date", "version": current_version}
+        if not IS_WINDOWS:
+            asset_url = str(release.get("asset_url", "")).strip()
+            asset_name = str(release.get("asset_name", "")).strip()
+            if not asset_url:
+                return {"status": "error", "error": "No zapret-rust binary URL found"}
+            return self._install_zapret_binary(version=latest_version or current_version, asset_url=asset_url, asset_name=asset_name)
         candidates = [
             (
                 str(release.get("asset_url", "")).strip(),
@@ -145,6 +168,36 @@ class RuntimeUpdateManager:
             if was_running:
                 self._start_component("zapret")
             self.logging.log("info", "Zapret updated", version=version, backup=str(backup or ""))
+            return {"status": "updated", "version": version or current_version}
+        finally:
+            shutil.rmtree(temp_root, ignore_errors=True)
+
+    def _install_zapret_binary(self, *, version: str, asset_url: str, asset_name: str) -> dict[str, str]:
+        current_version = self.storage._detect_zapret_version()
+        if version and current_version == version:
+            return {"status": "up-to-date", "version": current_version}
+        runtime_root = self.storage.paths.runtime_dir / "zapret-discord-youtube-rust"
+        binary_path = runtime_root / "zapret-rust"
+        was_running = self._is_image_running("nfqws")
+        temp_root = Path(tempfile.mkdtemp(prefix="zapret_zen_zapret_rust_update_"))
+        try:
+            if was_running:
+                self._stop_component("zapret")
+            backup = self.storage.create_backup(runtime_root, "pre-update-zapret-rust")
+            download_path = temp_root / (asset_name or "zapret-rust")
+            self._download_to_file(asset_url, download_path, timeout=150)
+            runtime_root.mkdir(parents=True, exist_ok=True)
+            if binary_path.exists():
+                binary_path.unlink()
+            shutil.copy2(download_path, binary_path)
+            binary_path.chmod(0o755)
+            if version:
+                (runtime_root / ".version").write_text(version.lstrip("v"), encoding="utf-8")
+            self.storage.ensure_layout()
+            self._rebuild_snapshot()
+            if was_running:
+                self._start_component("zapret")
+            self.logging.log("info", "Zapret-rust updated", version=version, backup=str(backup or ""))
             return {"status": "updated", "version": version or current_version}
         finally:
             shutil.rmtree(temp_root, ignore_errors=True)

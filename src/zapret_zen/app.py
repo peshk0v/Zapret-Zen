@@ -10,7 +10,9 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-if sys.platform.startswith("win"):
+from zapret_zen.platform import IS_WINDOWS, IS_LINUX, is_admin
+
+if IS_WINDOWS:
     import winreg
 
 from PySide6.QtCore import QObject, QTimer, Qt, Slot
@@ -269,10 +271,13 @@ def run(argv: list[str] | None = None) -> int:
         )
     if not known.autostart_launch:
         _startup_trace("run: ensure_admin start")
-        elevate_result = _ensure_admin_windows(runtime_argv)
-        _startup_trace(f"run: ensure_admin result={elevate_result}")
-        if elevate_result in (2, 3):
-            return elevate_result
+        if IS_WINDOWS:
+            elevate_result = _ensure_admin_windows(runtime_argv)
+            _startup_trace(f"run: ensure_admin result={elevate_result}")
+            if elevate_result in (2, 3):
+                return elevate_result
+        elif IS_LINUX and not is_admin():
+            _startup_trace("run: not running as root on Linux, zapret features may need elevated privileges")
     elif not _is_admin_windows():
         _startup_trace("run: autostart-launch without admin, requesting elevation")
         elevate_result = _ensure_admin_windows(runtime_argv)

@@ -7,6 +7,7 @@ import ctypes
 from pathlib import Path
 from typing import Any
 
+from zapret_zen.platform import IS_WINDOWS, system_hosts_path
 from zapret_zen.services.logging_service import LoggingManager
 from zapret_zen.services.service_catalog import ALWAYS_APPLY_SERVICE_IDS
 from zapret_zen.services.service_rules import SERVICE_RULES
@@ -38,7 +39,10 @@ class ZapretRuntimeBuilder:
 
     def get_zapret_bundles(self, enabled_only: bool, *, include_hidden_generals: bool = False) -> list[dict[str, Any]]:
         bundles: list[dict[str, Any]] = []
-        base = self.storage.paths.runtime_dir / "zapret-discord-youtube"
+        if IS_WINDOWS:
+            base = self.storage.paths.runtime_dir / "zapret-discord-youtube"
+        else:
+            base = self.storage.paths.runtime_dir / "zapret-discord-youtube-rust"
         index_map = {
             str(item.get("id", "")): str(item.get("name", "")).strip()
             for item in (self.storage.read_json(self.storage.paths.cache_dir / "mods_index.json", default=[]) or [])
@@ -76,7 +80,10 @@ class ZapretRuntimeBuilder:
     def prepare_active_zapret_runtime(self, selected_bundle_root: Path, selected_bundle_id: str, selected_script_name: str) -> Path:
         self._cleanup_inactive_zapret_runtimes()
         active_root = self._next_active_runtime_dir()
-        base_root = self.storage.paths.runtime_dir / "zapret-discord-youtube"
+        if IS_WINDOWS:
+            base_root = self.storage.paths.runtime_dir / "zapret-discord-youtube"
+        else:
+            base_root = self.storage.paths.runtime_dir / "zapret-discord-youtube-rust"
         if base_root.exists():
             shutil.copytree(base_root, active_root, dirs_exist_ok=True, ignore=self._runtime_copy_ignore)
         else:
@@ -354,7 +361,7 @@ class ZapretRuntimeBuilder:
                 entries.append(entry)
         return entries
 
-    _SYSTEM_HOSTS_PATH = Path(r"C:\Windows\System32\drivers\etc\hosts")
+    _SYSTEM_HOSTS_PATH = system_hosts_path()
     _MARKER_START = "# === Zapret Zen START ==="
     _MARKER_END = "# === Zapret Zen END ==="
 

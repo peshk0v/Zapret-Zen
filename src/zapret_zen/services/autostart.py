@@ -2,11 +2,14 @@
 
 import subprocess
 import sys
-import winreg
 from pathlib import Path
 from subprocess import CompletedProcess
 
+from zapret_zen.platform import IS_WINDOWS
 from zapret_zen.services.logging_service import LoggingManager
+
+if IS_WINDOWS:
+    import winreg
 
 
 class AutostartManager:
@@ -19,9 +22,13 @@ class AutostartManager:
         self.logging = logging
 
     def is_enabled(self) -> bool:
+        if not IS_WINDOWS:
+            return self._xdg_autostart_exists()
         return self._task_exists() or self._run_entry_exists()
 
     def set_enabled(self, enabled: bool) -> bool:
+        if not IS_WINDOWS:
+            return self._set_xdg_autostart(enabled)
         command = self._build_command()
         self._remove_legacy_run_entries()
         self._delete_task()
@@ -35,6 +42,62 @@ class AutostartManager:
         self.logging.log("info", "Windows autostart changed", enabled=enabled, actual=result, command=command if enabled else "")
         return result
 
+    def ensure_runs_elevated(self) -> None:
+        if not IS_WINDOWS:
+            return
+        if not self._task_exists():
+            if not self._run_entry_exists():
+                return
+            command = self._build_command()
+            if self._create_task(command):
+                self._remove_legacy_run_entries()
+                self.logging.log("info", "Windows autostart migrated from Run entry to scheduled task")
+            return
+        self._create_task(self._build_command())
+
+    # ── Linux XDG autostart ────────────────────────────────────────────
+
+    @staticmethod
+    def _xdg_autostart_dir() -> Path:
+        import os
+
+        xdg = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+        return Path(xdg) / "autostart"
+
+    def _xdg_autostart_path(self) -> Path:
+        return self._xdg_autostart_dir() / "zapret-zen.desktop"
+
+    def _xdg_autostart_exists(self) -> bool:
+        return self._xdg_autostart_path().exists()
+
+    def _set_xdg_autostart(self, enabled: bool) -> bool:
+        target = self._xdg_autostart_path()
+        if not enabled:
+            if target.exists():
+                target.unlink(missing_ok=True)
+            return not target.exists()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        executable = Path(sys.executable)
+        if executable.suffix.lower() == ".exe" or executable.name in ("python", "python3"):
+            main_module = Path(__file__).resolve().parents[1] / "main.py"
+            exec_line = f'{sys.executable} "{main_module}" --autostart-launch'
+        else:
+            exec_line = f'{sys.executable} --autostart-launch'
+        content = (
+            "[Desktop Entry]\n"
+            "Type=Application\n"
+            "Name=Zapret-Zen\n"
+            "Comment=Zapret-Zen autostart\n"
+            f"Exec={exec_line}\n"
+            "Hidden=false\n"
+            "NoDisplay=false\n"
+            "X-GNOME-Autostart-enabled=true\n"
+        )
+        target.write_text(content, encoding="utf-8")
+        return target.exists()
+
+    # ── Windows schtasks / registry ────────────────────────────────────
+
     def _build_command(self) -> str:
         executable = Path(sys.executable)
         if executable.suffix.lower() == ".exe" and executable.name.lower() != "python.exe":
@@ -47,6 +110,8 @@ class AutostartManager:
         return proc.returncode == 0
 
     def _run_entry_exists(self) -> bool:
+        if not IS_WINDOWS:
+            return False
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, self.RUN_KEY, 0, winreg.KEY_READ) as key:
                 for name in (self.APP_NAME, *self.LEGACY_APP_NAMES):
@@ -59,17 +124,6 @@ class AutostartManager:
         except FileNotFoundError:
             return False
         return False
-
-    def ensure_runs_elevated(self) -> None:
-        if not self._task_exists():
-            if not self._run_entry_exists():
-                return
-            command = self._build_command()
-            if self._create_task(command):
-                self._remove_legacy_run_entries()
-                self.logging.log("info", "Windows autostart migrated from Run entry to scheduled task")
-            return
-        self._create_task(self._build_command())
 
     def _create_task(self, command: str) -> bool:
         proc = self._run_schtasks(
@@ -126,6 +180,8 @@ class AutostartManager:
         return output.decode("utf-8", errors="replace")
 
     def _set_run_entry(self, command: str) -> bool:
+        if not IS_WINDOWS:
+            return False
         try:
             with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, self.RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
                 winreg.SetValueEx(key, self.APP_NAME, 0, winreg.REG_SZ, command)
@@ -135,6 +191,8 @@ class AutostartManager:
             return False
 
     def _remove_legacy_run_entries(self) -> None:
+        if not IS_WINDOWS:
+            return
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, self.RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
                 for name in (self.APP_NAME, *self.LEGACY_APP_NAMES):

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from zapret_zen.domain import AppPaths
+from zapret_zen.platform import IS_WINDOWS
 from zapret_zen.ui.theme import ensure_theme_files
 
 
@@ -28,14 +29,21 @@ class StorageManager:
         components_file = self.paths.data_dir / "components.json"
         zapret_version = self._detect_zapret_version()
         tg_version = self._detect_tgws_version()
+        component_source = (
+            "https://github.com/Flowseal/zapret-discord-youtube"
+            if IS_WINDOWS
+            else "https://github.com/Sergeydigl3/zapret-discord-youtube-rust"
+        )
+        component_command = ["cmd.exe", "/c", "general.bat"] if IS_WINDOWS else ["./zapret-rust"]
+        tg_command = "TgWsProxy_windows.exe" if IS_WINDOWS else "TgWsProxy"
         default_components = [
             {
                 "id": "zapret",
                 "name": "Zapret",
-                "description": "РћСЃРЅРѕРІРЅРѕР№ РјРѕРґСѓР»СЊ РѕР±С…РѕРґР° Р±Р»РѕРєРёСЂРѕРІРѕРє РґР»СЏ СЃР°Р№С‚РѕРІ Рё СЃРµСЂРІРёСЃРѕРІ.",
+                "description": "Основной модуль обхода блокировок для сайтов и сервисов.",
                 "version": zapret_version,
-                "source": "https://github.com/Flowseal/zapret-discord-youtube",
-                "command": ["cmd.exe", "/c", "general.bat"],
+                "source": component_source,
+                "command": component_command,
                 "enabled": True,
                 "autostart": False,
             },
@@ -46,7 +54,7 @@ class StorageManager:
                 "description": "Прокси для Telegram через локальный порт.",
                 "version": tg_version,
                 "source": "https://github.com/Flowseal/tg-ws-proxy",
-                "command": ["TgWsProxy_windows.exe"],
+                "command": [tg_command],
                 "enabled": True,
                 "autostart": False,
             },
@@ -118,6 +126,14 @@ class StorageManager:
 
     def _detect_zapret_version(self) -> str:
         service_bat = self.paths.runtime_dir / "zapret-discord-youtube" / "service.bat"
+        version_file = self.paths.runtime_dir / "zapret-discord-youtube-rust" / ".version"
+        if version_file.exists():
+            try:
+                value = version_file.read_text(encoding="utf-8", errors="ignore").strip()
+                if value:
+                    return value
+            except Exception:
+                return "unknown"
         if not service_bat.exists():
             return "unknown"
         try:
