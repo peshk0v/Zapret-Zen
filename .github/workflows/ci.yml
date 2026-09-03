@@ -22,15 +22,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: windows-latest
-            shell: pwsh
-            artifact: zapret-zen-ci-windows
-            dist_path: dist_nuitka/main.dist/**
-          - os: ubuntu-latest
-            shell: bash
-            artifact: zapret-zen-ci-linux
-            dist_path: dist_nuitka/main.dist/**
+        os:
+          - windows-latest
+          - ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -41,7 +35,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        shell: ${{ matrix.shell }}
+        shell: bash
         env:
           PIP_PREFER_BINARY: "1"
         run: |
@@ -49,30 +43,28 @@ jobs:
           python -m pip install -e .[dev]
 
       # Windows-specific: native C compiler for PySide6/Nuitka.
-      - name: Set up MSVC (Windows)
+      - name: Set up MSVC
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
-      # Linux-specific: required system libs/tools for packaging checks.
+      # Linux-specific: required system libs/tools.
       - name: Install Linux system tools
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y file
-          python -c "import sys; print('python', sys.version)"
-          python -m compileall -q src
 
       - name: Syntax / import smoke check
-        shell: ${{ matrix.shell }}
+        shell: bash
         run: |
           python -m compileall -q src
 
       - name: Build Nuitka (Windows)
         if: runner.os == 'Windows'
-        shell: pwsh
-        run: .\scripts\build_nuitka.ps1 -Python python -OutputDir dist_nuitka -Compiler msvc
+        shell: bash
+        run: powershell -ExecutionPolicy Bypass -File ./scripts/build_nuitka.ps1 -Python python -OutputDir dist_nuitka -Compiler msvc
 
       - name: Build Nuitka (Linux)
         if: runner.os == 'Linux'
@@ -80,9 +72,9 @@ jobs:
           PYTHON: python
         run: ./scripts/build_nuitka.sh
 
-      - name: Upload ${{ matrix.artifact }} artifacts
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.dist_path }}
+          name: zapret-zen-ci-${{ runner.os }}
+          path: dist_nuitka/main.dist/**
           if-no-files-found: error
