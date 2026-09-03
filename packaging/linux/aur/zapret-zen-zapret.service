@@ -1,0 +1,12 @@
+[Unit]
+Description=Zapret (Zapret-Zen) — DPI bypass proxy
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/zapret-zen --run-component zapret
+Restart=no
+RemainAfterExit=no
+
+[Install]
+WantedBy=default.target

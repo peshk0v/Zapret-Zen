@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Zapret-Zen
+Name[ru]=Запрет-Зен
+GenericName=DPI bypass manager
+GenericName[ru]=Менеджер обхода DPI
+Comment=Desktop hub for managing DPI-bypass utilities
+Comment[ru]=Центр управления утилитами обхода блокировок
+Exec=zapret-zen
+Icon=zapret-zen
+Terminal=false
+Categories=Network;Utility;
+StartupNotify=true
+X-GNOME-Autostart-enabled=true

@@ -12,7 +12,6 @@ import subprocess
 import sys
 import threading
 import time
-import webbrowser
 import shutil
 import tempfile
 import urllib.parse
@@ -28,7 +27,10 @@ from zapret_zen.domain import ComponentDefinition, ComponentState
 from zapret_zen.platform import (
     IS_WINDOWS,
     IS_LINUX,
+    build_elevated_command,
+    configure_zapret_sudoers as platform_configure_zapret_sudoers,
     dev_null,
+    flush_zapret_firewall,
     get_creation_flags,
     get_startup_info,
     has_zapret_rust,
@@ -36,6 +38,11 @@ from zapret_zen.platform import (
     is_admin,
     kill_image_by_name as _platform_kill_image,
     kill_process_by_pid as _platform_kill_pid,
+    set_prefer_sudo,
+    stop_image_elevated,
+    sudoers_configured as platform_sudoers_configured,
+    terminate_privileged_process,
+    terminate_zapret_runtime_gracefully,
     zapret_binary_name,
     zapret_rust_binary_name,
 )
@@ -46,6 +53,7 @@ from zapret_zen.services.service_catalog import ALWAYS_APPLY_SERVICE_IDS
 from zapret_zen.services.service_rules import SERVICE_RULES
 from zapret_zen.services.settings import SettingsManager
 from zapret_zen.services.storage import StorageManager
+from zapret_zen.services.systemd_service import SystemdServiceManager
 from zapret_zen.services.vpn_detector import VpnDetector
 from zapret_zen.services.github_recovery import GitHubRecovery
 from zapret_zen.services.tg_proxy_manager import TelegramProxyManager
@@ -190,8 +198,11 @@ class ProcessManager:
         self._hub_runtime_token = secrets.token_urlsafe(24)
         self._log_streams: dict[str, Any] = {}
         self._telegram_proxy_launch_info: dict[str, Any] | None = None
+        self._pending_tg_proxy_link: str | None = None
         self._diagnostic_runtime_override = False
+        self._sudoers_config_attempted = False
         self._job = _WindowsJob() if IS_WINDOWS else None
+        self.systemd = SystemdServiceManager(logging)
         self.github = GitHubNetworkClient(logging, recovery_runner=self.with_github_connectivity_recovery)
         self._creationflags = get_creation_flags()
         self._startupinfo = get_startup_info()
@@ -242,6 +253,38 @@ class ProcessManager:
             component.autostart = component.id in settings.autostart_component_ids
         return components
 
+    def ensure_zapret_dependencies(self) -> dict[str, str]:
+        """Ensure zapret-rust has its nfqws binary and strategy files (Linux only)."""
+        return self.updates.ensure_zapret_rust_dependencies()
+
+    def _zapret_rust_binary(self) -> Path | None:
+        runtime_dir = self.storage.paths.runtime_dir / "zapret-discord-youtube-rust"
+        binary = runtime_dir / zapret_rust_binary_name()
+        if not binary.exists():
+            binary = self.storage.paths.runtime_dir / "bin" / zapret_rust_binary_name()
+        return binary if binary.exists() else None
+
+    def zapret_sudoers_configured(self) -> bool:
+        if not IS_LINUX:
+            return True
+        binary = self._zapret_rust_binary()
+        if binary is None:
+            return False
+        return platform_sudoers_configured(str(binary))
+
+    def configure_zapret_sudoers(self) -> dict[str, str]:
+        """Install a passwordless sudoers rule so Zapret runs without further prompts."""
+        if not IS_LINUX:
+            return {"status": "ok", "configured": True}
+        binary = self._zapret_rust_binary()
+        if binary is None:
+            return {"status": "error", "error": "zapret-rust не найден."}
+        ok = platform_configure_zapret_sudoers(str(binary))
+        if ok:
+            self.settings.update(linux_zapret_use_sudoers=True)
+            set_prefer_sudo(True)
+        return {"status": "ok" if ok else "error", "configured": True}
+
     def list_zapret_generals(self) -> list[dict[str, str]]:
         options: list[dict[str, str]] = []
         bundles = self._get_zapret_bundles(enabled_only=True, include_hidden_generals=True)
@@ -249,35 +292,56 @@ class ProcessManager:
             bundle_id = bundle["id"]
             bundle_title = bundle["title"]
             root = bundle["path"]
-            for script in sorted(root.glob("*.bat")):
-                name = script.name.lower()
-                if name.startswith("service"):
-                    continue
-                option_id = f"{bundle_id}|{script.name}"
-                options.append(
-                    {
-                        "id": option_id,
-                        "name": script.name,
-                        "bundle": bundle_title,
-                        "bundle_id": bundle_id,
-                        "path": str(script),
-                    }
-                )
+            search_dirs = [root]
+            nested = root / "zapret-discord-youtube-linux"
+            if nested.is_dir():
+                search_dirs.append(nested)
+            for search_root in search_dirs:
+                for script in sorted(search_root.glob("*.bat")):
+                    name = script.name.lower()
+                    if name.startswith("service"):
+                        continue
+                    option_id = f"{bundle_id}|{script.name}"
+                    options.append(
+                        {
+                            "id": option_id,
+                            "name": script.name,
+                            "bundle": bundle_title,
+                            "bundle_id": bundle_id,
+                            "path": str(script),
+                        }
+                    )
         return sorted(options, key=self._general_option_sort_key)
 
-    def prompt_telegram_proxy_link(self) -> None:
+    def _build_tg_ws_proxy_link(self) -> str:
         settings = self.settings.get()
         secret = (settings.tg_proxy_secret or "").strip().lower()
         if secret.startswith("dd") and len(secret) > 2:
             secret = secret[2:]
         if not secret:
             secret = secrets.token_hex(16)
-            settings = self.settings.update(tg_proxy_secret=secret)
-        self._ensure_telegram_and_open_proxy_link(
-            host=settings.tg_proxy_host,
-            port=int(settings.tg_proxy_port),
-            secret=secret,
+            self.settings.update(tg_proxy_secret=secret)
+        return (
+            f"tg://proxy?server={settings.tg_proxy_host}"
+            f"&port={int(settings.tg_proxy_port or 0)}&secret=dd{secret}"
         )
+
+    def prompt_telegram_proxy_link(self) -> str:
+        """Build the TG WS Proxy deep link and make it available for the clipboard.
+
+        Returns the ``tg://proxy?...`` link and stores it so the GUI can retrieve it
+        synchronously and copy it to the clipboard.  This is intentionally a pure,
+        fast, non-blocking operation — it never launches Telegram, opens a browser, or
+        waits on subprocesses (which previously froze the UI / opened an empty browser).
+        """
+        link = self._build_tg_ws_proxy_link()
+        self._pending_tg_proxy_link = link
+        return link
+
+    def consume_tg_proxy_link(self) -> str | None:
+        link = self._pending_tg_proxy_link
+        self._pending_tg_proxy_link = None
+        return link
 
     def consume_telegram_proxy_launch_info(self) -> dict[str, Any] | None:
         info = self._telegram_proxy_launch_info
@@ -315,7 +379,7 @@ class ProcessManager:
             state = self._states.get(component.id, ComponentState(component_id=component.id))
             if component.id == "zapret":
                 if IS_LINUX:
-                    was_running = _platform_is_image_running("nfqws")
+                    was_running = _platform_is_image_running("nfqws") or _platform_is_image_running("zapret-rust")
                 else:
                     was_running = _platform_is_image_running("winws.exe")
                 state.status = "running" if was_running else "stopped"
@@ -437,6 +501,9 @@ class ProcessManager:
                         pass
             if IS_WINDOWS and process and process.pid:
                 self._run_quiet(["taskkill", "/PID", str(process.pid), "/F"])
+            if self._systemd_delegate_available(component_id) and self.systemd.unit_exists(component_id):
+                self._stop_via_systemd(component_id)
+                time.sleep(0.5)
             self._processes.pop(component_id, None)
             if IS_WINDOWS:
                 self._kill_image("TgWsProxy_windows.exe")
@@ -519,27 +586,64 @@ class ProcessManager:
     def _stop_zapret_linux(self, component_id: str) -> ComponentState:
         state = self._states.get(component_id, ComponentState(component_id=component_id))
         process = self._processes.get(component_id)
-        if process and process.poll() is None:
-            try:
-                process.terminate()
-                process.wait(timeout=4)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                try:
-                    process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    pass
-        _platform_kill_image("nfqws")
+
+        # 1) Graceful stop: SIGTERM to the REAL zapret-rust process(es) so the internal
+        #    "Clearing nftables rules..." handler can flush the nftables chains it
+        #    created (leaving them hooked to the now-dead queue 200 stalls the network).
+        #    We must signal the actual zapret-rust child, not the sudo wrapper.
+        graceful = terminate_zapret_runtime_gracefully()
+        if graceful:
+            # Give the cleanup handler a moment to flush rules and stop nfqws.
+            time.sleep(1.5)
+
+        # 2) Stop the systemd user unit that owns the daemon (if any).
+        if self._systemd_delegate_available(component_id) and self.systemd.unit_exists(component_id):
+            self._stop_via_systemd(component_id)
+            time.sleep(0.5)
+
+        # 3) Kill the zapret-rust parent process by PID (most reliable, subprocess path)
+        if process is not None:
+            pid = process.pid
+            terminate_privileged_process(process)
+            if pid:
+                _platform_kill_pid(pid)
+
+        # 4) Kill any remaining nfqws / zapret-rust processes by name (elevated)
+        stop_image_elevated("nfqws")
+        stop_image_elevated("zapret-rust")
+
         self._close_source_log_stream("zapret")
         self._processes.pop(component_id, None)
         self._current_zapret_runtime = None
-        still_running = _platform_is_image_running("nfqws")
+
+        # 5) Belt-and-suspenders: remove any nftables chains / fwmark rule that
+        #    zapret-rust may have left behind (e.g. if the graceful handler never ran).
+        flush_status = flush_zapret_firewall()
+        self.logging.log(
+            "info",
+            "Zapret (Linux) firewall flush",
+            nft_permission_ok=flush_status.get("nft_permission_ok"),
+            chains_removed=flush_status.get("chains_removed"),
+            tables_removed=flush_status.get("tables_removed"),
+            graceful_sigterm=graceful,
+        )
+
+        # 6) Retry loop: keep killing until processes are actually gone
+        still_running = True
+        for _attempt in range(4):
+            time.sleep(0.35)
+            _platform_kill_image("nfqws")
+            _platform_kill_image("zapret-rust")
+            if not _platform_is_image_running("nfqws") and not _platform_is_image_running("zapret-rust"):
+                still_running = False
+                break
+
         state.status = "stopped" if not still_running else "running"
         state.pid = None
         if state.status != "stopped":
             state.last_error = "Failed to stop nfqws"
         self._states[component_id] = state
-        self.logging.log("info", "Zapret (Linux) stopped")
+        self.logging.log("info", "Zapret (Linux) stopped", still_running=still_running)
         self._invalidate_state_cache()
         return state
 
@@ -568,15 +672,144 @@ class ProcessManager:
         target.autostart = not target.autostart
         autostart_ids = sorted(component.id for component in components if component.autostart)
         self.settings.update(autostart_component_ids=autostart_ids)
+        # On Linux keep the component's systemd user unit enabled/disabled so it
+        # launches at login without needing the GUI app running.
+        try:
+            self._sync_component_autostart_systemd(component_id, target.autostart)
+        except Exception as error:
+            self.logging.log("warning", "Failed to sync component systemd autostart", component_id=component_id, error=str(error))
         self.logging.log("info", "Component autostart state changed", component_id=component_id, autostart=target.autostart)
         return target
+
+    # ── Linux systemd delegation helpers ──────────────────────────────
+
+    def _systemd_delegate_available(self, component_id: str) -> bool:
+        """True when we should hand component lifecycle to a systemd user unit."""
+        return IS_LINUX and self.systemd.available()
+
+    def _write_component_systemd_unit(
+        self,
+        component_id: str,
+        *,
+        description: str,
+        command: list[str],
+        working_directory: str | Path | None = None,
+        environment: dict[str, str] | None = None,
+    ) -> bool:
+        if not self._systemd_delegate_available(component_id):
+            return False
+        if not command:
+            return False
+        # Only forward a small, curated set of vars (systemd user services get a
+        # sensible default env already). Avoids dumping the whole environment into
+        # the unit file (which can contain newlines/quotes/secrets).
+        merged: dict[str, str] = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+        if environment:
+            for key in ("PYTHONPATH", "HOME", "LANG", "LC_ALL", "XDG_RUNTIME_DIR"):
+                if key in environment:
+                    merged[key] = environment[key]
+        return self.systemd.write_unit(
+            component_id,
+            description=description,
+            command=command,
+            working_directory=working_directory,
+            environment=merged,
+            stdout_path=self.logging.source_log_path(component_id),
+        )
+
+    def _start_via_systemd(self, component_id: str) -> bool:
+        if not self._systemd_delegate_available(component_id):
+            return False
+        return self.systemd.start(component_id)
+
+    def _stop_via_systemd(self, component_id: str) -> bool:
+        if not self._systemd_delegate_available(component_id):
+            return False
+        return self.systemd.stop(component_id)
+
+    def _ensure_component_systemd_unit(self, component: ComponentDefinition) -> bool:
+        """Make sure a systemd user unit exists for a component before enabling.
+
+        The real unit is written when the component is started; if the user toggles
+        autostart before ever running it, enable a sensible user-level unit built
+        from the component's configured command so ``systemctl --user enable``
+        succeeds and the service can start at login without the GUI.
+        """
+        if self.systemd.unit_exists(component.id):
+            return True
+        cmd = list(component.command or [])
+        working = None
+        if component.id == "zapret":
+            working = self.storage.paths.runtime_dir / "zapret-discord-youtube-rust"
+        elif component.id == "tg-ws-proxy":
+            working = self.storage.paths.runtime_dir / "tg-ws-proxy"
+        resolved = cmd
+        if cmd and cmd[0].startswith("./"):
+            cand = (working or self.storage.paths.runtime_dir) / cmd[0][2:]
+            resolved = [str(cand), *cmd[1:]] if cand.exists() else [str(Path(cmd[0]).resolve()), *cmd[1:]]
+        name = component.name or component.id
+        return self._write_component_systemd_unit(
+            component.id,
+            description=f"{name} (Zapret-Zen) — background worker",
+            command=resolved,
+            working_directory=working,
+        )
+
+    def _sync_component_autostart_systemd(self, component_id: str, enabled: bool) -> None:
+        if not self._systemd_delegate_available(component_id):
+            return
+        if enabled:
+            try:
+                component = next(c for c in self.list_components() if c.id == component_id)
+            except StopIteration:
+                component = None
+            if component is not None:
+                self._ensure_component_systemd_unit(component)
+            self.systemd.enable(component_id)
+        else:
+            self.systemd.disable(component_id)
 
     def _start_zapret(self, component_id: str) -> ComponentState:
         if IS_LINUX:
             return self._start_zapret_rust(component_id)
         return self._start_zapret_winws(component_id)
 
+    def _resolve_zapret_rust_binary(self) -> Path | None:
+        runtime_dir = self.storage.paths.runtime_dir / "zapret-discord-youtube-rust"
+        binary = runtime_dir / zapret_rust_binary_name()
+        if not binary.exists():
+            binary = self.storage.paths.runtime_dir / "bin" / zapret_rust_binary_name()
+        if not binary.exists():
+            return None
+        return binary
+
+    def _ensure_linux_zapret_sudoers(self) -> bool:
+        """Ensure the sudoers NOPASSWD rule is installed so zapret-rust runs via silent sudo -n.
+
+        Runs once per session, up-front (before any stop/start pkexec prompt), so the user
+        is asked for a password exactly once.
+        """
+        if self._sudoers_config_attempted or not IS_LINUX or is_admin():
+            return platform_sudoers_configured(
+                str(self._resolve_zapret_rust_binary() or self.storage.paths.runtime_dir)
+            )
+        self._sudoers_config_attempted = True
+        binary = self._resolve_zapret_rust_binary()
+        if binary is None:
+            return False
+        settings = self.settings.get()
+        set_prefer_sudo(bool(getattr(settings, "linux_zapret_use_sudoers", False)))
+        if platform_sudoers_configured(str(binary)):
+            return True
+        if platform_configure_zapret_sudoers(str(binary)):
+            self.settings.update(linux_zapret_use_sudoers=True)
+            set_prefer_sudo(True)
+            return True
+        return False
+
     def _start_zapret_rust(self, component_id: str) -> ComponentState:
+        if IS_LINUX:
+            self._ensure_linux_zapret_sudoers()
         self.stop_component(component_id)
 
         runtime_dir = self.storage.paths.runtime_dir / "zapret-discord-youtube-rust"
@@ -597,6 +830,29 @@ class ProcessManager:
         strategy_name = ""
         if selected_option:
             strategy_name = Path(selected_option["path"]).stem
+        if strategy_name and IS_LINUX:
+            selected_bat = Path(selected_option["path"])
+            strategy_dir = runtime_dir / "zapret-discord-youtube-linux"
+            strategy_dest = strategy_dir / strategy_name
+            if selected_bat.exists() and selected_bat != strategy_dest:
+                copied = False
+                try:
+                    if is_admin():
+                        shutil.copy2(selected_bat, strategy_dest)
+                        copied = True
+                    elif strategy_dir.is_dir() and os.access(strategy_dir, os.W_OK):
+                        shutil.copy2(selected_bat, strategy_dest)
+                        copied = True
+                except Exception:
+                    copied = False
+                if not copied and not is_admin():
+                    try:
+                        subprocess.run(
+                            ["sudo", "-n", "/usr/bin/install", "-m", "0644", str(selected_bat), str(strategy_dest)],
+                            capture_output=True, check=False, timeout=15,
+                        )
+                    except Exception:
+                        pass
 
         cmd = [str(binary)]
         settings = self.settings.get()
@@ -615,40 +871,68 @@ class ProcessManager:
         elif game_mode == "udp":
             cmd.append("--gamefilterudp")
 
-        self.logging.log("info", "Zapret-rust starting", command=" ".join(cmd))
-        process = subprocess.Popen(
-            cmd,
-            cwd=str(runtime_dir),
-            stdout=self._open_source_log_stream("zapret"),
-            stderr=subprocess.STDOUT,
-        )
-        if self._job:
-            self._job.assign_pid(process.pid)
-        self._processes[component_id] = process
+        launch_cmd, launch_error = build_elevated_command(cmd, chdir=str(runtime_dir))
+        if launch_error:
+            state = ComponentState(
+                component_id=component_id,
+                status="error",
+                last_error=launch_error,
+            )
+            self._states[component_id] = state
+            self._invalidate_state_cache()
+            return state
+
+        self.logging.log("info", "Zapret-rust starting", command=" ".join(launch_cmd))
+
+        systemd_started = False
+        if self._write_component_systemd_unit(
+            component_id,
+            description="Zapret (Zapret-Zen) — DPI bypass proxy",
+            command=launch_cmd,
+            working_directory=str(runtime_dir),
+        ) and self._start_via_systemd(component_id):
+            self._processes.pop(component_id, None)
+            self._close_source_log_stream("zapret")
+            systemd_started = True
+            self.logging.log("info", "Zapret-rust delegated to systemd", unit=self.systemd.unit_name(component_id))
+
+        process = None
+        if not systemd_started:
+            process = subprocess.Popen(
+                launch_cmd,
+                cwd=str(runtime_dir),
+                stdout=self._open_source_log_stream("zapret"),
+                stderr=subprocess.STDOUT,
+            )
+            if self._job:
+                self._job.assign_pid(process.pid)
+            self._processes[component_id] = process
 
         running = False
         for _ in range(24):
-            if _platform_is_image_running("nfqws"):
+            if _platform_is_image_running("nfqws") or _platform_is_image_running("zapret-rust"):
                 running = True
                 break
             time.sleep(0.25)
 
         if running:
-            state = ComponentState(component_id=component_id, status="running", pid=process.pid)
-            self.logging.log("info", "Zapret-rust started", binary=str(binary))
+            pid = self.systemd.main_pid(component_id) if systemd_started else (process.pid if process else None)
+            state = ComponentState(component_id=component_id, status="running", pid=pid)
+            self.logging.log("info", "Zapret-rust started", binary=str(binary), systemd=systemd_started)
         else:
             self._close_source_log_stream("zapret")
             log_hint = self._recent_source_log_error("zapret")
             error_message = log_hint or (
-                "zapret-rust did not start. Ensure nfqws has CAP_NET_ADMIN "
-                "(sudo setcap cap_net_admin+ep $(which nfqws)) and nftables or iptables is installed."
+                "zapret-rust did not start. The selected strategy could not be applied; "
+                "see the zapret log for the exact error. Root privileges are handled "
+                "automatically and do not require a password dialog."
             )
             state = ComponentState(
                 component_id=component_id,
                 status="error",
                 last_error=error_message,
             )
-            self.logging.log("error", "Zapret-rust failed to start", error=error_message)
+            self.logging.log("error", "Zapret-rust failed to start", error=error_message, systemd=systemd_started)
         self._states[component_id] = state
         self._invalidate_state_cache()
         return state
@@ -776,12 +1060,16 @@ class ProcessManager:
         ipset_mode: str,
         game_mode: str,
     ) -> ComponentState:
+        if IS_LINUX:
+            self._ensure_linux_zapret_sudoers()
         self.stop_component(component_id)
         selected_option = self._resolve_selected_general_option()
         if selected_option is None:
             state = ComponentState(component_id=component_id, status="error", last_error="No general script found.")
             self._states[component_id] = state
             return state
+        if IS_LINUX:
+            return self._start_zapret_rust(component_id)
         selected_script = Path(selected_option["path"])
         selected_bundle_root = Path(selected_script).parent
         selected_bundle_id = str(selected_option.get("bundle_id", "") or "")
@@ -1341,29 +1629,48 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
             tg_pool_size=int(settings.tg_proxy_pool_size or 4),
         )
         self.logging.log("info", "TG WS Proxy starting", command=" ".join(command))
-        process = subprocess.Popen(
-            command,
-            cwd=str(self.storage.paths.install_root),
-            creationflags=self._creationflags,
-            startupinfo=self._startupinfo,
-            env=self._build_worker_env(),
-            stdout=self._open_source_log_stream("tg-ws-proxy"),
-            stderr=subprocess.STDOUT,
-        )
+
+        systemd_started = False
+        if self._write_component_systemd_unit(
+            component_id,
+            description="TG WS Proxy (Zapret-Zen) — Telegram MTProto Proxy worker",
+            command=command,
+            working_directory=str(self.storage.paths.install_root),
+            environment=self._build_worker_env(),
+        ) and self._start_via_systemd(component_id):
+            self._processes.pop(component_id, None)
+            self._close_source_log_stream("tg-ws-proxy")
+            systemd_started = True
+            self.logging.log("info", "TG WS Proxy delegated to systemd", unit=self.systemd.unit_name(component_id))
+
+        process = None
+        if not systemd_started:
+            process = subprocess.Popen(
+                command,
+                cwd=str(self.storage.paths.install_root),
+                creationflags=self._creationflags,
+                startupinfo=self._startupinfo,
+                env=self._build_worker_env(),
+                stdout=self._open_source_log_stream("tg-ws-proxy"),
+                stderr=subprocess.STDOUT,
+            )
         listen_host = settings.tg_proxy_host
         listen_port = int(settings.tg_proxy_port)
         ready = False
         exit_code = None
         for _ in range(16):
-            exit_code = process.poll()
-            if exit_code is not None:
+            if process is not None:
+                exit_code = process.poll()
+                if exit_code is not None:
+                    break
+            elif not self.systemd.is_active(component_id):
                 break
             if self._is_port_listening(listen_host, listen_port):
                 ready = True
                 break
-            time.sleep(0.35)
+            time.sleep(0.15)
         if not ready:
-            if exit_code is None:
+            if process is not None and exit_code is None:
                 exit_code = process.poll()
             error_hint = "TG WS Proxy worker did not open listening port."
             worker_error_log = self.storage.paths.logs_dir / "tg_worker_error.log"
@@ -1374,14 +1681,17 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
                     pass
             if exit_code is not None:
                 error_hint += f" (exit code: {exit_code})"
-            try:
-                process.kill()
-            except Exception:
-                pass
-            try:
-                process.wait(timeout=2)
-            except Exception:
-                pass
+            if process is not None:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+                try:
+                    process.wait(timeout=2)
+                except Exception:
+                    pass
+            if systemd_started:
+                self._stop_via_systemd(component_id)
             self._close_source_log_stream("tg-ws-proxy")
             state = ComponentState(
                 component_id=component_id,
@@ -1389,14 +1699,17 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
                 last_error=error_hint,
             )
             self._states[component_id] = state
-            self.logging.log("error", "TG WS Proxy worker failed to start", error=error_hint)
+            self.logging.log("error", "TG WS Proxy worker failed to start", error=error_hint, systemd=systemd_started)
             return state
+
+        pid = self.systemd.main_pid(component_id) if systemd_started else (process.pid if process else None)
         if self._job:
-            self._job.assign_pid(process.pid)
-        state = ComponentState(component_id=component_id, status="running", pid=process.pid)
-        self._processes[component_id] = process
+            self._job.assign_pid(pid)
+        if not systemd_started:
+            self._processes[component_id] = process
+        state = ComponentState(component_id=component_id, status="running", pid=pid)
         self._states[component_id] = state
-        self.logging.log("info", "TG WS Proxy worker started", pid=process.pid)
+        self.logging.log("info", "TG WS Proxy worker started", pid=pid, systemd=systemd_started)
         signature = (
             f"{settings.tg_proxy_host}:{int(settings.tg_proxy_port)}:{secret}:"
             f"{settings.tg_proxy_dc_ip}:{settings.tg_proxy_cfproxy_enabled}:"
@@ -1404,11 +1717,10 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
             f"{settings.tg_proxy_fake_tls_domain}:{settings.tg_proxy_buf_kb}:{settings.tg_proxy_pool_size}"
         )
         if settings.tg_proxy_link_prompt_signature != signature:
-            self._ensure_telegram_and_open_proxy_link(
-                host=settings.tg_proxy_host,
-                port=int(settings.tg_proxy_port),
-                secret=secret,
-            )
+            # Proxy connection is fully driven by the user via the "Connect to Telegram"
+            # button (which copies the tg:// deep link to the clipboard). We deliberately
+            # do NOT auto-launch Telegram or open a browser here — doing so previously
+            # froze the UI and opened an empty browser window.
             self.settings.update(tg_proxy_link_prompt_signature=signature)
         return state
 
@@ -1927,7 +2239,7 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
 
     def _prepare_diagnostic_runtime(self, *, general_id: str, ipset_mode: str, game_mode: str) -> bool:
         if IS_LINUX:
-            original_running = _platform_is_image_running("nfqws")
+            original_running = _platform_is_image_running("nfqws") or _platform_is_image_running("zapret-rust")
         else:
             original_running = self._is_image_running("winws.exe")
         if original_running:
@@ -2299,7 +2611,7 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
     def _capture_github_recovery_snapshot(self) -> dict[str, object]:
         settings = self.settings.get()
         if IS_LINUX:
-            was_running = _platform_is_image_running("nfqws")
+            was_running = _platform_is_image_running("nfqws") or _platform_is_image_running("zapret-rust")
         else:
             was_running = self._is_image_running("winws.exe")
         return {
@@ -2724,6 +3036,12 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
 
     def _force_stop_zapret_runtime(self) -> None:
         process = self._processes.get("zapret")
+
+        # Graceful SIGTERM to the real zapret-rust first so its nftables cleanup runs.
+        graceful = terminate_zapret_runtime_gracefully() if not IS_WINDOWS else False
+        if graceful:
+            time.sleep(1.5)
+
         if process and process.poll() is None:
             try:
                 process.terminate()
@@ -2746,9 +3064,19 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
         else:
             for _ in range(4):
                 _platform_kill_image("nfqws")
-                if not _platform_is_image_running("nfqws"):
+                _platform_kill_image("zapret-rust")
+                if not _platform_is_image_running("nfqws") and not _platform_is_image_running("zapret-rust"):
                     break
                 time.sleep(0.35)
+            flush_status = flush_zapret_firewall()
+            self.logging.log(
+                "info",
+                "Zapret (Linux) forced-stop firewall flush",
+                nft_permission_ok=flush_status.get("nft_permission_ok"),
+                chains_removed=flush_status.get("chains_removed"),
+                tables_removed=flush_status.get("tables_removed"),
+                graceful_sigterm=graceful,
+            )
 
         self._processes.pop("zapret", None)
         self._current_zapret_runtime = None
@@ -2929,7 +3257,7 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
 
     def _is_port_listening(self, host: str, port: int) -> bool:
         try:
-            with socket.create_connection((host, port), timeout=0.8):
+            with socket.create_connection((host, port), timeout=0.15):
                 return True
         except OSError:
             return False
@@ -2990,108 +3318,3 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
                     return True
             return False
         return _platform_is_image_running("telegram-desktop")
-
-    def _telegram_desktop_candidates(self) -> list[Path]:
-        candidates: list[Path] = []
-        if IS_WINDOWS:
-            candidates.extend([
-                Path(os.environ.get("APPDATA", "")) / "Telegram Desktop" / "Telegram.exe",
-                Path(os.environ.get("LOCALAPPDATA", "")) / "Telegram Desktop" / "Telegram.exe",
-                Path(os.environ.get("ProgramFiles", "")) / "Telegram Desktop" / "Telegram.exe",
-                Path(os.environ.get("ProgramFiles(x86)", "")) / "Telegram Desktop" / "Telegram.exe",
-                Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WindowsApps" / "Telegram.exe",
-                Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WindowsApps" / "Telegram Desktop.exe",
-            ])
-            for image_name in ("Telegram.exe", "telegram.exe", "Telegram Desktop.exe"):
-                resolved = shutil.which(image_name)
-                if resolved:
-                    candidates.append(Path(resolved))
-        else:
-            for name in ("telegram-desktop", "Telegram"):
-                resolved = shutil.which(name)
-                if resolved:
-                    candidates.append(Path(resolved))
-            xdg_dirs = [
-                Path.home() / ".local" / "share" / "applications",
-                Path("/usr/share/applications"),
-                Path("/usr/local/share/applications"),
-            ]
-            for d in xdg_dirs:
-                desktop_file = d / "telegram.desktop"
-                if desktop_file.exists():
-                    for line in desktop_file.read_text(encoding="utf-8", errors="ignore").splitlines():
-                        if line.lower().startswith("exec="):
-                            exec_val = line.split("=", 1)[1].strip().split()[0]
-                            p = Path(exec_val)
-                            if p.exists():
-                                candidates.append(p)
-                            break
-        unique: list[Path] = []
-        seen: set[str] = set()
-        for candidate in candidates:
-            key = str(candidate).strip().lower()
-            if not key or key in seen:
-                continue
-            seen.add(key)
-            unique.append(candidate)
-        return unique
-
-    def _start_telegram_desktop(self) -> tuple[bool, bool]:
-        candidates = self._telegram_desktop_candidates()
-        candidate_found = False
-        for candidate in candidates:
-            if candidate.exists():
-                candidate_found = True
-                try:
-                    subprocess.Popen(
-                        [str(candidate)],
-                        creationflags=self._creationflags,
-                        startupinfo=self._startupinfo,
-                    )
-                    self.logging.log("info", "Telegram launch requested", path=str(candidate))
-                    return candidate_found, True
-                except Exception as error:
-                    self.logging.log("warning", "Failed to start Telegram", path=str(candidate), error=str(error))
-        return candidate_found, False
-
-    def _ensure_telegram_and_open_proxy_link(self, host: str, port: int, secret: str) -> dict[str, Any]:
-        self.logging.log("info", "TG WS Proxy auto-connect requested", component_id="tg-ws-proxy", host=host, port=port)
-        running_before = self._is_telegram_running()
-        candidate_found = False
-        launch_requested = False
-        if not running_before:
-            self.logging.log("info", "Telegram Desktop is not running, attempting to launch it", component_id="tg-ws-proxy")
-            candidate_found, launch_requested = self._start_telegram_desktop()
-            for _ in range(40):
-                if self._is_telegram_running():
-                    self.logging.log("info", "Telegram Desktop detected after launch", component_id="tg-ws-proxy")
-                    break
-                time.sleep(0.25)
-        running_after = self._is_telegram_running()
-        self.logging.log("info", "Sending proxy link to Telegram", component_id="tg-ws-proxy")
-        link_opened = self._open_telegram_proxy_link(host=host, port=port, secret=secret)
-        info = {
-            "running_before": running_before,
-            "running_after": running_after,
-            "desktop_candidate_found": candidate_found,
-            "launch_requested": launch_requested,
-            "link_opened": link_opened,
-            "missing": not running_after and not candidate_found and not link_opened,
-        }
-        self._telegram_proxy_launch_info = info
-        if not running_after and not link_opened:
-            self.logging.log("warning", "Telegram was not detected after proxy start", component_id="tg-ws-proxy")
-        return info
-
-    def _open_telegram_proxy_link(self, host: str, port: int, secret: str) -> bool:
-        link = f"tg://proxy?server={host}&port={port}&secret=dd{secret}"
-        try:
-            if sys.platform.startswith("win"):
-                os.startfile(link)  # type: ignore[attr-defined]
-            else:
-                webbrowser.open(link)
-            self.logging.log("info", "Telegram proxy link opened", link=link)
-            return True
-        except Exception as error:
-            self.logging.log("warning", "Failed to open Telegram proxy link", link=link, error=str(error))
-            return False

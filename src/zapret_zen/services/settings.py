@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import asdict
 
 from zapret_zen.domain import AppSettings
+from zapret_zen.platform import linux_default_native_window
 from zapret_zen.services.service_catalog import SERVICE_PRESET_IDS
 from zapret_zen.services.storage import StorageManager
 
@@ -59,6 +60,13 @@ class SettingsManager:
 
         if not raw.get("language"):
             settings.language = self._detect_system_language()
+            changed = True
+
+        # First run / upgrade: prefer a compositor-managed (native) window on
+        # Wayland compositors (e.g. Hyprland) where client-side decoration
+        # conflicts with the compositor's own border/rounding.
+        if "native_window_on_linux" not in raw:
+            settings.native_window_on_linux = linux_default_native_window()
             changed = True
 
         old_theme = raw.get("theme", "")

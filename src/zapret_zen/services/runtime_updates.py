@@ -2,15 +2,22 @@ from __future__ import annotations
 
 import re
 import shutil
+import tarfile
 import tempfile
 import zipfile
 from pathlib import Path
 from typing import Any, Callable
 
-from zapret_zen.platform import IS_WINDOWS
+from zapret_zen.platform import IS_LINUX, IS_WINDOWS
 from zapret_zen.services.github_network import GitHubNetworkClient
 from zapret_zen.services.logging_service import LoggingManager
 from zapret_zen.services.storage import StorageManager
+
+_NFQWS_BOL_VAN_REPO = "bol-van/zapret"
+_STRATEGIES_FLOWSEAL_REPO = "Flowseal/zapret-discord-youtube"
+_STRATEGIES_ARCHIVE_URL = "https://github.com/Flowseal/zapret-discord-youtube/archive/refs/heads/main.zip"
+
+_NFQWS_ARCHIVE_DIR = "linux-x86_64"
 
 
 class RuntimeUpdateManager:
@@ -101,6 +108,144 @@ class RuntimeUpdateManager:
             "source_url": str(payload.get("zipball_url") or "").strip() or fallback_url,
         }
 
+    def ensure_zapret_rust_dependencies(self) -> dict[str, str]:
+        """Ensure the zapret-rust runtime has its nfqws binary and strategy files.
+
+        The zapret-rust binary does not bundle nfqws or the strategy (.bat) files;
+        it downloads them itself on first run. Zapret-Zen runs it non-interactively,
+        so we provision these dependencies up front. No-op on Windows.
+        """
+        if not IS_LINUX:
+            return {"status": "skipped", "reason": "not-linux"}
+        runtime_root = self.storage.paths.runtime_dir / "zapret-discord-youtube-rust"
+        bin_dir = runtime_root / "bin"
+        nfqws_path = bin_dir / "nfqws"
+        strategies_dir = runtime_root / "zapret-discord-youtube-linux"
+        strategies_ok = (strategies_dir / "general.bat").exists()
+
+        if nfqws_path.exists() and nfqws_path.is_file() and strategies_ok:
+            return {"status": "ok", "material": "present"}
+
+        temp_root = Path(tempfile.mkdtemp(prefix="zapret_zen_zapret_deps_"))
+        downloaded = []
+        try:
+            if not (nfqws_path.exists() and nfqws_path.is_file()):
+                nfqws_result = self._ensure_zapret_nfqws(runtime_root, bin_dir, nfqws_path, temp_root)
+                if not nfqws_result.get("ok"):
+                    return {
+                        "status": "error",
+                        "error": nfqws_result.get("error", "Failed to download nfqws"),
+                    }
+                downloaded.append("nfqws")
+
+            if not strategies_ok:
+                strategies_result = self._ensure_zapret_strategies(runtime_root, strategies_dir, temp_root)
+                if not strategies_result.get("ok"):
+                    return {
+                        "status": "error",
+                        "error": strategies_result.get("error", "Failed to download strategies"),
+                    }
+                downloaded.append("strategies")
+
+            self.storage.ensure_layout()
+            self.logging.log("info", "Zapret-rust dependencies ensured", required=", ".join(downloaded) or "none")
+            return {"status": "ok", "material": ", ".join(downloaded) or "present"}
+        finally:
+            shutil.rmtree(temp_root, ignore_errors=True)
+
+    def _ensure_zapret_nfqws(self, runtime_root: Path, bin_dir: Path, nfqws_path: Path, temp_root: Path) -> dict[str, str]:
+        arch_dir = _NFQWS_ARCHIVE_DIR
+        tag = ""
+        archive_url = ""
+        release_asset = ""
+        try:
+            payload = self.github.github_json(
+                f"https://api.github.com/repos/{_NFQWS_BOL_VAN_REPO}/releases/latest",
+                timeout=25,
+                purpose="zapret-nfqws-release-metadata",
+            )
+            if not isinstance(payload, dict):
+                raise ValueError("Invalid nfqws release metadata")
+            tag = str(payload.get("tag_name") or "").strip()
+            if isinstance(payload.get("assets"), list):
+                for asset in payload["assets"]:
+                    if isinstance(asset, dict):
+                        name = str(asset.get("name") or "")
+                        if name.endswith(".tar.gz"):
+                            archive_url = str(asset.get("browser_download_url") or "")
+                            release_asset = name
+                            break
+            if not archive_url:
+                raise ValueError("No nfqws tar.gz asset found")
+        except Exception as error:
+            self.logging.log("warning", "Failed to resolve nfqws release metadata", error=str(error))
+            return {"ok": False, "error": f"Could not resolve zapret nfqws release: {error}"}
+
+        archive_path = temp_root / (release_asset or "zapret.tar.gz")
+        try:
+            self._download_to_file(archive_url, archive_path, timeout=150)
+            extract_root = temp_root / "zapret"
+            extract_root.mkdir(parents=True, exist_ok=True)
+            with tarfile.open(archive_path, "r:gz") as archive:
+                archive.extractall(extract_root)
+            candidates = [extract_root]
+            candidates.extend(path for path in extract_root.iterdir() if path.is_dir())
+            source_nfqws: Path | None = None
+            for candidate in candidates:
+                probe = candidate / "binaries" / arch_dir / "nfqws"
+                if probe.exists() and probe.is_file():
+                    source_nfqws = probe
+                    break
+            if source_nfqws is None:
+                for candidate in extract_root.rglob(f"binaries/{arch_dir}/nfqws"):
+                    if candidate.is_file():
+                        source_nfqws = candidate
+                        break
+            if source_nfqws is None:
+                raise ValueError(f"nfqws binary for {arch_dir} not found in {release_asset or 'archive'}")
+            bin_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_nfqws, nfqws_path)
+            nfqws_path.chmod(0o755)
+            if tag:
+                (runtime_root / ".nfqws_version").write_text(tag.lstrip("v"), encoding="utf-8")
+            self.logging.log("info", "nfqws installed for zapret-rust", version=tag, arch=arch_dir)
+            return {"ok": True, "version": tag}
+        except Exception as error:
+            self.logging.log("warning", "Failed to install nfqws", error=str(error))
+            return {"ok": False, "error": f"Failed to install nfqws: {error}"}
+
+    def _ensure_zapret_strategies(self, runtime_root: Path, strategies_dir: Path, temp_root: Path) -> dict[str, str]:
+        zip_path = temp_root / "strategies.zip"
+        try:
+            self._download_to_file(_STRATEGIES_ARCHIVE_URL, zip_path, timeout=150)
+            extract_root = temp_root / "strategies_src"
+            extract_root.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(zip_path, "r") as archive:
+                archive.extractall(extract_root)
+            source: Path | None = None
+            for candidate in extract_root.iterdir():
+                if candidate.is_dir() and (candidate / "general.bat").exists():
+                    source = candidate
+                    break
+            if source is None:
+                for candidate in extract_root.rglob("*"):
+                    if candidate.is_dir() and (candidate / "general.bat").exists():
+                        source = candidate
+                        break
+            if source is None:
+                raise ValueError("Strategy archive does not contain general.bat")
+            if strategies_dir.exists():
+                shutil.rmtree(strategies_dir, ignore_errors=True)
+            shutil.copytree(source, strategies_dir)
+            self.logging.log("info", "Zapret strategies installed", source=str(source.name))
+            return {"ok": True}
+        except Exception as error:
+            self.logging.log("warning", "Failed to install zapret strategies", error=str(error))
+            return {"ok": False, "error": f"Failed to install strategies: {error}"}
+
+    def _apply_zapret_dependency_metadata(self, runtime_root: Path) -> None:
+        return
+
     def update_zapret_runtime(self) -> dict[str, str]:
         release = self.fetch_latest_zapret_release()
         latest_version = str(release.get("latest_version", "")).strip()
@@ -178,7 +323,7 @@ class RuntimeUpdateManager:
             return {"status": "up-to-date", "version": current_version}
         runtime_root = self.storage.paths.runtime_dir / "zapret-discord-youtube-rust"
         binary_path = runtime_root / "zapret-rust"
-        was_running = self._is_image_running("nfqws")
+        was_running = self._is_image_running("nfqws") or self._is_image_running("zapret-rust")
         temp_root = Path(tempfile.mkdtemp(prefix="zapret_zen_zapret_rust_update_"))
         try:
             if was_running:

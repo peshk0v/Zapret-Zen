@@ -4,13 +4,33 @@ on:
   push:
     branches:
       - master
+      - main
       - "codex/**"
+      - "feature/**"
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build-windows-x64:
-    runs-on: windows-latest
+  # ── Binary builds: Windows + Linux run simultaneously on every push/PR ──
+  build:
+    name: build-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            shell: pwsh
+            artifact: zapret-zen-ci-windows
+            dist_path: dist_nuitka/main.dist/**
+          - os: ubuntu-latest
+            shell: bash
+            artifact: zapret-zen-ci-linux
+            dist_path: dist_nuitka/main.dist/**
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -21,30 +41,48 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        shell: pwsh
+        shell: ${{ matrix.shell }}
         env:
           PIP_PREFER_BINARY: "1"
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e .[dev]
 
-      - name: Set up MSVC
+      # Windows-specific: native C compiler for PySide6/Nuitka.
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
-      - name: Build Nuitka x64
+      # Linux-specific: required system libs/tools for packaging checks.
+      - name: Install Linux system tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y file
+          python -c "import sys; print('python', sys.version)"
+          python -m compileall -q src
+
+      - name: Syntax / import smoke check
+        shell: ${{ matrix.shell }}
+        run: |
+          python -m compileall -q src
+
+      - name: Build Nuitka (Windows)
+        if: runner.os == 'Windows'
         shell: pwsh
         run: .\scripts\build_nuitka.ps1 -Python python -OutputDir dist_nuitka -Compiler msvc
 
-      - name: SignPath placeholder
-        shell: pwsh
-        run: .\scripts\signpath_stub.ps1 -InputPath ".\dist_nuitka\main.dist\zapret_zen.exe"
+      - name: Build Nuitka (Linux)
+        if: runner.os == 'Linux'
+        env:
+          PYTHON: python
+        run: ./scripts/build_nuitka.sh
 
-      - name: Upload build artifacts
+      - name: Upload ${{ matrix.artifact }} artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: zapret-zen-ci-windows
-          path: |
-            dist_nuitka/main.dist/**
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.dist_path }}
           if-no-files-found: error

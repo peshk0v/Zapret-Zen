@@ -1,0 +1,43 @@
+# Maintainer: peshk0v <peshk0v@users.noreply.github.com>
+# Contributor: Zapret-Zen contributors
+#
+# Prebuilt binary variant of Zapret-Zen.  Downloads the official Linux release
+# tarball (.tar.xz, /usr layout) and installs it to standard FHS paths
+# (/usr/bin, /usr/share).  A small install script provisions the per-user
+# systemd units and desktop entry on first login.
+#
+# See the sibling `zapret-zen` (build-from-source) package for source builds.
+
+pkgname=zapret-zen-bin
+pkgver=0.0.0
+pkgrel=1
+pkgdesc="Cross-platform desktop hub for managing DPI-bypass utilities (prebuilt binary)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/peshk0v/Zapret-Zen"
+license=('MIT')
+depends=(
+  'libc'
+  'libgl'
+  'libegl'
+  'libxcb-cursor0'
+  'qt6-base'
+)
+optdepends=(
+  'systemd: per-user service units for elevated background components'
+  'xclip: clipboard support on X11/Wayland'
+)
+source=("zapret-zen-${pkgver}-linux-\$CARCH.tar.xz::https://github.com/peshk0v/Zapret-Zen/releases/download/v${pkgver}/zapret_zen_${pkgver}_linux_\$CARCH.tar.xz")
+sha256sums=('SKIP')
+
+package() {
+  install -d "$pkgdir/usr"
+  cp -a "$srcdir/$pkgname-$pkgver/usr/." "$pkgdir/usr/"
+  chmod +x "$pkgdir/usr/lib/zapret-zen/zapret_zen"
+  ln -sf /usr/lib/zapret-zen/zapret_zen "$pkgdir/usr/bin/zapret-zen"
+
+  install -d "$pkgdir/usr/lib/systemd/user"
+  install -Dm644 ../zapret-zen-zapret.service \
+    "$pkgdir/usr/lib/systemd/user/zapret-zen-zapret.service"
+  install -Dm644 ../zapret-zen-tg-ws-proxy.service \
+    "$pkgdir/usr/lib/systemd/user/zapret-zen-tg-ws-proxy.service"
+}

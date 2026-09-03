@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from zapret_zen.platform import IS_WINDOWS
 from zapret_zen.services.logging_service import LoggingManager
 from zapret_zen.services.settings import SettingsManager
 
@@ -65,7 +66,11 @@ class RuntimeDiagnostics:
         )
 
     def prepare_diagnostic_runtime(self, *, general_id: str, ipset_mode: str, game_mode: str) -> bool:
-        original_running = self._is_image_running("winws.exe")
+        if IS_WINDOWS:
+            _image = "winws.exe"
+            original_running = self._is_image_running(_image)
+        else:
+            original_running = self._is_image_running("nfqws") or self._is_image_running("zapret-rust")
         if original_running:
             self._stop_component("zapret")
         self.settings.update(
@@ -163,7 +168,11 @@ class RuntimeDiagnostics:
     ) -> list[dict[str, object]]:
         options_map = {item["id"]: item for item in self._list_zapret_generals()}
         settings_snapshot = self.capture_diagnostic_settings()
-        original_running = self._is_image_running("winws.exe")
+        if IS_WINDOWS:
+            _image = "winws.exe"
+            original_running = self._is_image_running(_image)
+        else:
+            original_running = self._is_image_running("nfqws") or self._is_image_running("zapret-rust")
         results: list[dict[str, object]] = []
         targets = targets if targets else self._load_standard_test_targets()
         total = max(1, len(batch))
@@ -243,7 +252,11 @@ class RuntimeDiagnostics:
         if not options:
             return []
         settings_snapshot = self.capture_diagnostic_settings()
-        original_running = self._is_image_running("winws.exe")
+        if IS_WINDOWS:
+            _image = "winws.exe"
+            original_running = self._is_image_running(_image)
+        else:
+            original_running = self._is_image_running("nfqws") or self._is_image_running("zapret-rust")
         results: list[dict[str, str]] = []
         targets = self._load_standard_test_targets()
         per_general_steps = max(2, len(targets) + 1)

@@ -1,0 +1,10 @@
+# Domains for the Social preset. All domains for checks are taken from this file. You can add or remove domains. One domain per line. Lines starting with # are ignored.
+twitter.com
+twimg.com
+reddit.com
+redditmedia.com
+t.me
+telegram.org
+instagram.com
+facebook.com
+whatsapp.com

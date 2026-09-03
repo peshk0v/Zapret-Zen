@@ -71,6 +71,11 @@ from PySide6.QtWidgets import (
 )
 
 from zapret_zen.bootstrap import ApplicationContext
+from zapret_zen.platform import (
+    IS_LINUX,
+    linux_default_native_window,
+    system_hosts_path,
+)
 from zapret_zen.ui.theme import ACCENT_PALETTE, _get_theme, build_stylesheet, generate_palette, is_light_theme, list_available_themes, load_theme_registry
 from zapret_zen.ui.service_card_base import BaseServiceCard
 from zapret_zen.ui.pages import DashboardPage, ServicesPage, ComponentsPage, ModsPage, LogsPage
@@ -4170,6 +4175,9 @@ class MainWindow(QMainWindow):
         self._launch_hidden = launch_hidden
         self._startup_show_onboarding = startup_show_onboarding
         self._skip_autosettings = skip_autosettings
+        self._linux_setup_pending = False
+        self._linux_setup_done = False
+        self._components_payload_requested = False
         self._skip_next_show_focus = launch_hidden
         self._drag_pos: QPoint | None = None
         self._taskbar_created_message = 0
@@ -4531,8 +4539,14 @@ class MainWindow(QMainWindow):
         self.setFixedSize(860, 520)
         self.setWindowTitle("Zapret-Zen")
         self.setWindowIcon(self._runtime_window_icon())
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+        # Native (compositor-managed) window mode on Wayland/Hyprland avoids the
+        # CSD vs. compositor border/rounding conflict. When native, drop the
+        # custom frameless + translucent look and let the compositor draw the
+        # frame and rounded corners.
+        self._native_window = self._compute_native_window()
+        if not self._native_window:
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, False)
         self._build_ui()
         self._attach_button_animations_recursive(self.centralWidget())
@@ -4575,8 +4589,24 @@ class MainWindow(QMainWindow):
         self._ensure_local_runtime_snapshot()
         self.refresh_dashboard()
         self._sync_power_aura_geometry()
-        if not self._startup_snapshot_ready:
-            QTimer.singleShot(0, lambda: self._submit_backend_task("load_startup_snapshot", action_id="__startup_snapshot__"))
+        if not self._startup_snapshot_ready or self._linux_zapret_setup_required():
+            if self._linux_zapret_setup_required():
+                self._linux_setup_pending = True
+                QTimer.singleShot(0, lambda: self._submit_backend_task("ensure_zapret_dependencies", action_id="__linux_setup__"))
+            else:
+                QTimer.singleShot(0, lambda: self._submit_backend_task("load_startup_snapshot", action_id="__startup_snapshot__"))
+        if IS_LINUX:
+            QTimer.singleShot(0, lambda: self._submit_backend_task("zapret_sudoers_status", action_id="linux_sudoers_status_init"))
+
+    def _linux_zapret_setup_required(self) -> bool:
+        if not IS_LINUX or self._linux_setup_done:
+            return False
+        try:
+            if not self._sorted_general_options():
+                return True
+        except Exception:
+            return False
+        return False
 
     def _themed_icon_color(self, filename: str) -> QColor | None:
         if filename not in {"power.svg", "share.svg", "trash.svg", "search.svg", "refresh.svg", "external.svg", "vpn.svg", "vpn.png"}:
@@ -5199,7 +5229,10 @@ class MainWindow(QMainWindow):
         shell = QWidget()
         shell.setObjectName("WindowShell")
         root = QVBoxLayout(shell)
-        root.setContentsMargins(6, 6, 6, 6)
+        if getattr(self, "_native_window", False):
+            root.setContentsMargins(0, 0, 0, 0)
+        else:
+            root.setContentsMargins(6, 6, 6, 6)
         root.setSpacing(0)
 
         frame = OnboardingFrame()
@@ -5246,6 +5279,62 @@ class MainWindow(QMainWindow):
         glow.glowChanged.connect(self._sync_shadow_position)
         self.setCentralWidget(shell)
         self._build_loading_overlay(shell)
+
+    def _compute_native_window(self) -> bool:
+        """Whether to run as a compositor-managed (native) window.
+
+        Only meaningful on Linux: native mode drops the custom frameless +
+        translucent client-side decoration (CSD) so Wayland compositors (Hyprland
+        in particular) draw the frame and rounded corners natively instead of
+        layering a square border over the app's rounded surface.
+        """
+        if not IS_LINUX:
+            return False
+        try:
+            return bool(self.context.settings.get().native_window_on_linux)
+        except Exception:
+            return linux_default_native_window()
+
+    def _native_window_style_override(self) -> str:
+        """Extra QSS appended after the theme sheet in native window mode.
+
+        Squares the app's internal corners and removes the gap/rounding that
+        would otherwise clash with the compositor-drawn (Hyprland) border.
+        """
+        if not getattr(self, "_native_window", False):
+            return ""
+        return (
+            "\n#RootFrame, #TitleBar, #Sidebar, #Content, #ContentSurface {\n"
+            "    border-radius: 0px;\n"
+            "}\n"
+            "#RootFrame {\n"
+            "    border-radius: 0px;\n"
+            "}\n"
+        )
+
+    def _apply_window_mode(self) -> None:
+        """Re-apply window flags, layout and styles depending on native vs CSD.
+
+        Called from __init__ (before show) and when the user toggles the
+        'Native window' setting so the change takes effect without a manual
+        restart.  Compositor re-decoration may still need a window re-show on
+        some platforms, but layout/rounding update immediately.
+        """
+        if not IS_LINUX:
+            return
+        self._native_window = self._compute_native_window()
+        self.setAttribute(
+            Qt.WidgetAttribute.WA_TranslucentBackground,
+            not self._native_window,
+        )
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint, not self._native_window)
+        shell = self.centralWidget()
+        if shell is not None:
+            root = shell.layout()
+            if root is not None and hasattr(root, "setContentsMargins"):
+                root.setContentsMargins(0, 0, 0, 0) if self._native_window else root.setContentsMargins(6, 6, 6, 6)
+        self._apply_theme()
+        self.update()
 
     def _sync_shadow_position(self) -> None:
         pass
@@ -6723,6 +6812,8 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(24, 12, 24, 0)
         root.setSpacing(0)
 
+        system_hosts_text = str(system_hosts_path())
+
         stack = QStackedWidget()
         stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._file_mode_stack = stack
@@ -6806,8 +6897,8 @@ class MainWindow(QMainWindow):
             (
                 self._t("Системный Hosts"),
                 self._t(
-                    "Добавить записи из модов в C:\\Windows\\System32\\drivers\\etc\\hosts.",
-                    "Add mod entries to C:\\Windows\\System32\\drivers\\etc\\hosts.",
+                    f"Добавить записи из модов в {system_hosts_text}.",
+                    f"Add mod entries to {system_hosts_text}.",
                 ),
                 "system_hosts",
                 "files.svg",
@@ -7197,7 +7288,7 @@ class MainWindow(QMainWindow):
         lang_items = [(_language_display_name(l, ui_language), l) for l in ("ru", "en")]
         lang_w, _ = _segment(lang_items, settings.language, "language")
         app_section.addWidget(lang_w)
-        autostart_cb = QCheckBox(self._t("Run with Windows"))
+        autostart_cb = QCheckBox(self._t("Run with system"))
         autostart_cb.setChecked(settings.autostart_windows)
         ctrl["autostart"] = autostart_cb
         app_section.addWidget(autostart_cb)
@@ -7205,6 +7296,18 @@ class MainWindow(QMainWindow):
         tray_cb.setChecked(settings.start_in_tray)
         ctrl["tray"] = tray_cb
         app_section.addWidget(tray_cb)
+        native_cb = None
+        if IS_LINUX:
+            native_cb = QCheckBox(self._t("Native window"))
+            native_cb.setToolTip(
+                self._t(
+                    "Использовать окно, управляемое композитором (без собственных рамок и скруглений). Рекомендуется для Wayland/Hyprland.",
+                    "Use a compositor-managed window (no custom frame/rounding). Recommended for Wayland/Hyprland.",
+                )
+            )
+            native_cb.setChecked(bool(settings.native_window_on_linux))
+            ctrl["native_window"] = native_cb
+            app_section.addWidget(native_cb)
         auto_comp_cb = QCheckBox(self._t("Auto-run components"))
         auto_comp_cb.setChecked(settings.auto_run_components)
         ctrl["auto_components"] = auto_comp_cb
@@ -7927,6 +8030,9 @@ class MainWindow(QMainWindow):
         cb = ctrl.get("tray")
         if isinstance(cb, QCheckBox):
             cb.setChecked(settings.start_in_tray)
+        cb = ctrl.get("native_window")
+        if isinstance(cb, QCheckBox):
+            cb.setChecked(bool(settings.native_window_on_linux))
         cb = ctrl.get("auto_components")
         if isinstance(cb, QCheckBox):
             cb.setChecked(settings.auto_run_components)
@@ -8014,6 +8120,9 @@ class MainWindow(QMainWindow):
         cb = ctrl.get("tray")
         if isinstance(cb, QCheckBox):
             payload["start_in_tray"] = cb.isChecked()
+        cb = ctrl.get("native_window")
+        if isinstance(cb, QCheckBox):
+            payload["native_window_on_linux"] = cb.isChecked()
         cb = ctrl.get("auto_components")
         if isinstance(cb, QCheckBox):
             payload["auto_run_components"] = cb.isChecked()
@@ -9008,6 +9117,43 @@ class MainWindow(QMainWindow):
             }
             self._mark_dirty("dashboard", "services", "components", "mods", "files", "tray")
             return
+        if action == "ensure_zapret_dependencies":
+            self._linux_setup_pending = False
+            self._linux_setup_done = True
+            self._startup_snapshot_ready = True
+            self._page_payload_cache["components"] = {
+                "components": payload.get("components", []),
+                "states": payload.get("states", []),
+                "general_options": payload.get("general_options", []),
+            }
+            self._mark_dirty("dashboard", "services", "components", "files", "tray")
+            self.refresh_components(payload)
+            if self._should_show_onboarding():
+                QTimer.singleShot(150, lambda: self._set_onboarding_visible(True))
+            self._schedule_onboarding_services_prewarm()
+            return
+        if action == "configure_zapret_sudoers":
+            ok = bool(payload.get("configured"))
+            if ok:
+                self._toast_notification("success", self._t("Права root"), self._t(
+                    "Автоматические права настроены. Zapret запускается без запроса пароля.",
+                    "Root privileges configured. Zapret runs without a password prompt.",
+                ))
+            else:
+                self._toast_notification("error", self._t("Права root"), self._t(
+                    "Не удалось настроить автоматические права. Проверьте пароль и доступ к sudo.",
+                    "Could not configure root privileges. Check your password and sudo access.",
+                ))
+            self._components_page.set_sudoers_configured(ok)
+            self._ui_signals.component_action_done.emit(action_id)
+            self._mark_dirty("components")
+            return
+        if action == "zapret_sudoers_status":
+            self._page_payload_cache["components"] = dict(self._page_payload_cache.get("components", {}))
+            self._page_payload_cache["components"]["sudoers_configured"] = bool(payload.get("configured"))
+            self._components_page.set_sudoers_configured(bool(payload.get("configured")))
+            self._mark_dirty("components")
+            return
         if action == "apply_settings":
             desired_autostart = bool(self.context.settings.get().autostart_windows)
             actual_autostart = self.context.autostart.is_enabled()
@@ -9017,16 +9163,18 @@ class MainWindow(QMainWindow):
                     self.context.settings.update(autostart_windows=actual_autostart)
                     self._toast_notification(
                         "error",
-                        self._t("Windows autostart"),
+                        self._t("Autostart", "Автозапуск"),
                         self._t(
-                            "Не удалось включить автозапуск. Проверьте права Windows или политики безопасности.",
-                            "Could not enable autostart. Check Windows permissions or security policies.",
+                            "Не удалось включить автозапуск. Проверьте права ОС или политики безопасности.",
+                            "Could not enable autostart. Check OS permissions or security policies.",
                         ),
                     )
             if bool(payload.get("theme_changed")):
                 self._apply_theme()
             if bool(payload.get("language_changed")):
                 self._retranslate_ui()
+            if bool(payload.get("native_window_changed")):
+                self._apply_window_mode()
             if bool(payload.get("theme_changed")) or bool(payload.get("language_changed")):
                 self._schedule_full_locale_theme_refresh()
             self._mark_dirty("dashboard", "services", "components", "mods", "files", "logs", "tray")
@@ -9268,6 +9416,18 @@ class MainWindow(QMainWindow):
             self._ensure_local_runtime_snapshot()
             self._startup_snapshot_ready = True
             self._mark_dirty("dashboard", "components", "tray")
+            return
+        if action == "ensure_zapret_dependencies":
+            self.context.logging.log("error", "linux_zapret_setup_failed", error=error)
+            self._linux_setup_pending = False
+            self._linux_setup_done = True
+            self._startup_snapshot_ready = True
+            self._mark_dirty("dashboard", "services", "components", "files", "tray")
+            return
+        if action == "configure_zapret_sudoers":
+            self._toast_notification("error", self._t("Права root"), error)
+            self._ui_signals.component_action_done.emit(action_id)
+            self._mark_dirty("components")
             return
         if action in {"toggle_master_runtime", "start_enabled_components", "select_general"}:
             self._profile_restart_pending = False
@@ -9541,7 +9701,7 @@ class MainWindow(QMainWindow):
         self._service_check_cache.clear()
         chevron = str((self._icons_dir / "chevron_down.svg").resolve())
         check = str((self._icons_dir / "check.svg").resolve())
-        self.setStyleSheet(build_stylesheet(theme, chevron_icon=chevron, check_icon=check, accent=accent))
+        self.setStyleSheet(build_stylesheet(theme, chevron_icon=chevron, check_icon=check, accent=accent) + self._native_window_style_override())
         self._update_power_icon()
         if isinstance(self.power_button, AnimatedPowerButton):
             self.power_button.set_power_theme(theme, accent)
@@ -10313,7 +10473,7 @@ class MainWindow(QMainWindow):
             self._cancel_file_tag_render()
             self._current_file_list_filter = "system_hosts"
             self._file_mode_stack.setCurrentIndex(2)
-            self.file_path_label.setText("C:\\Windows\\System32\\drivers\\etc\\hosts")
+            self.file_path_label.setText(str(system_hosts_path()))
             self.file_editor.setReadOnly(True)
             self.file_editor.clear()
             self.files_list.clear()
@@ -10764,7 +10924,7 @@ class MainWindow(QMainWindow):
         self._submit_backend_task("toggle_master_runtime")
 
     def _auto_restart_partial(self) -> None:
-        if self._toggle_in_progress or not self._startup_snapshot_ready:
+        if self._toggle_in_progress or self._autostart_in_progress or not self._startup_snapshot_ready:
             return
         if self._partial_restart_count >= 3:
             return
@@ -12748,7 +12908,7 @@ class MainWindow(QMainWindow):
             animate_power = not self._page_transition_running
             self.power_button.set_active_state(fully_running, animate=animate_power)
             self.power_button.set_partial_state(partially_running)
-        if partially_running and self._partial_restart_count < 3 and not self._toggle_in_progress:
+        if partially_running and self._partial_restart_count < 3 and not self._toggle_in_progress and not self._autostart_in_progress:
             if not self._partial_restart_timer.isActive():
                 self._partial_restart_timer.start()
         else:
@@ -14755,12 +14915,17 @@ class MainWindow(QMainWindow):
                 for option in options:
                     config_combo.addItem(self._format_general_option_label(option), option["id"])
                 if config_combo.count() == 0:
-                    config_combo.addItem(self._t("Configurations are loading"), "")
+                    if self._linux_setup_pending:
+                        config_combo.addItem(self._t("Zapret is being set up..."), "")
+                    else:
+                        config_combo.addItem(self._t("Configurations are loading"), "")
                     config_combo.setEnabled(False)
-                    try:
-                        self._submit_backend_task("load_components_payload")
-                    except Exception:
-                        pass
+                    if not self._components_payload_requested:
+                        self._components_payload_requested = True
+                        try:
+                            self._submit_backend_task("load_components_payload")
+                        except Exception:
+                            pass
                 if config_combo.count() > 0:
                     picked_index = 0
                     for i in range(config_combo.count()):
@@ -15077,12 +15242,25 @@ class MainWindow(QMainWindow):
 
     def _prompt_tg_proxy_connect(self) -> None:
         try:
-            self.context.processes.prompt_telegram_proxy_link()
-            self._notify_telegram_proxy_status_from_payload({"telegram_proxy": self.context.processes.consume_telegram_proxy_launch_info() or {}})
+            link = self.context.processes.prompt_telegram_proxy_link()
+            if not link:
+                raise RuntimeError("Could not build the TG WS Proxy link.")
+            app = QApplication.instance()
+            if app is not None:
+                app.clipboard().setText(link)
+            self.context.logging.log("info", "TG WS Proxy link copied to clipboard", link=link)
+            self._toast_notification(
+                "success",
+                self._t("Proxy link copied to clipboard"),
+                self._t(
+                    "Ссылка прокси скопирована в буфер обмена. Откройте Telegram: Настройки → Данные и хранилище → Настройки прокси → Добавить прокси и вставьте ссылку.",
+                    "The proxy link has been copied to the clipboard. In Telegram: Settings → Data and Storage → Proxy Settings → Add Proxy, then paste the link.",
+                ),
+            )
         except Exception as error:
             self._show_error(
                 self._t("TG Proxy"),
-                f"{self._t('Failed to open Telegram connection prompt.')}\n{error}",
+                f"{self._t('Failed to copy the Telegram proxy link.')}\n{error}",
             )
 
     def _update_zapret_runtime(self) -> None:

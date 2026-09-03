@@ -3,10 +3,12 @@ import ctypes
 import hashlib
 import multiprocessing
 import os
+import signal
 import subprocess
 import sys
 import threading
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -235,12 +237,71 @@ def _run_uninstall(install_dir_arg: str, silent: bool = False) -> int:
     return 0
 
 
+def _run_headless_component(component_id: str, silent: bool) -> int:
+    """Start a single background component as a foreground daemon process.
+
+    Used by the systemd user unit templates (and `--run-component <id>`) to run
+    an elevated background worker (e.g. Zapret, TG WS Proxy) at login without
+    opening the GUI.  Bootstraps headlessly (no QApplication), starts the
+    component through the normal ProcessManager (which delegates to a per-user
+    systemd unit when available), then stays alive until signalled so the
+    systemd service remains active.  On SIGTERM/SIGINT the component is stopped
+    gracefully (Zapret => nftables flush via terminate_zapret_runtime_gracefully).
+    """
+    try:
+        from zapret_zen.bootstrap import bootstrap_application
+
+        context = bootstrap_application()
+    except Exception as error:  # pragma: no cover - depends on environment
+        if not silent:
+            print(f"Zapret-Zen: failed to bootstrap for '{component_id}': {error}", file=sys.stderr)
+        return 1
+
+    stop_requested = threading.Event()
+
+    def _handle_signal(signum: int, _frame: object) -> None:
+        stop_requested.set()
+
+    try:
+        signal.signal(signal.SIGTERM, _handle_signal)
+        signal.signal(signal.SIGINT, _handle_signal)
+    except (ValueError, OSError):  # pragma: no cover - non-main thread
+        pass
+
+    try:
+        state = context.processes.start_component(component_id)
+    except Exception as error:  # pragma: no cover - depends on environment
+        if not silent:
+            print(f"Zapret-Zen: failed to start component '{component_id}': {error}", file=sys.stderr)
+        context.processes.stop_component(component_id)
+        return 1
+
+    if getattr(state, "status", "") == "error":
+        if not silent:
+            print(f"Zapret-Zen: component '{component_id}' failed to start: {getattr(state, 'last_error', '')}", file=sys.stderr)
+        context.processes.stop_component(component_id)
+        return 1
+
+    try:
+        while not stop_requested.wait(1.0):
+            running = any(
+                state.component_id == component_id and state.status == "running"
+                for state in context.processes.list_states()
+            )
+            if not running:
+                break
+    finally:
+        context.processes.stop_component(component_id)
+    return 0
+
+
 def run(argv: list[str] | None = None) -> int:
     multiprocessing.freeze_support()
     _startup_trace("run: freeze_support passed")
     runtime_argv = list(argv if argv is not None else sys.argv[1:])
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--worker", choices=["tg-ws-proxy"], default="")
+    parser.add_argument("--run-component", default="")
     parser.add_argument("--autostart-launch", action="store_true")
     parser.add_argument("--skip-autosettings", action="store_true")
     parser.add_argument("--uninstall", action="store_true")
@@ -269,6 +330,9 @@ def run(argv: list[str] | None = None) -> int:
             buf_kb=known.tg_buf_kb,
             pool_size=known.tg_pool_size,
         )
+    if known.run_component:
+        _startup_trace(f"run: run-component={known.run_component}")
+        return _run_headless_component(known.run_component, known.silent)
     if not known.autostart_launch:
         _startup_trace("run: ensure_admin start")
         if IS_WINDOWS:

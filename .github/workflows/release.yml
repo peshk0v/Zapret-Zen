@@ -164,7 +164,7 @@ jobs:
           version="${tag#v}"
           VERSION="$version" PYTHON=python ./scripts/build_nuitka.sh
 
-      - name: Package Linux (.tar.gz, .deb, .rpm)
+      - name: Package Linux (.tar.gz, .tar.xz, .deb, .rpm, AppImage)
         run: |
           tag="${{ github.ref_name }}"
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
@@ -179,8 +179,10 @@ jobs:
           name: linux-packages
           path: |
             dist_linux_packages/*.tar.gz
+            dist_linux_packages/*.tar.xz
             dist_linux_packages/*.deb
             dist_linux_packages/*.rpm
+            dist_linux_packages/*.AppImage
           if-no-files-found: error
 
   package-and-release:

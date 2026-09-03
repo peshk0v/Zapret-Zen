@@ -1,0 +1,6 @@
+# Domains tested during TTL autopick. This file fully replaces the built-in defaults. You can add or remove domains. One domain per line. Lines starting with # are ignored.
+discord.com
+youtube.com
+cdn.discordapp.com
+googlevideo.com
+discord.media

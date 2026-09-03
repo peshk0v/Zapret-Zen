@@ -1,0 +1,27 @@
+# Domains for the Discord preset. All domains for checks are taken from this file. You can add or remove domains. One domain per line. Lines starting with # are ignored.
+dis.gd
+discord-attachments-uploads-prd.storage.googleapis.com
+discord.app
+discord.co
+discord.com
+discord.design
+discord.dev
+discord.gift
+discord.gifts
+discord.gg
+discord.media
+discord.new
+discord.store
+discord.status
+discord-activities.com
+discordactivities.com
+discordapp.com
+discordapp.net
+discordcdn.com
+discordmerch.com
+discordpartygames.com
+discordsays.com
+discordsez.com
+discordstatus.com
+cdn.discordapp.com
+discord-attachments-uploads.s3.amazonaws.com

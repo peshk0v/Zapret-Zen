@@ -1,0 +1,1 @@
+# Domains for the Custom preset. All domains for checks are taken from this file. You can add or remove domains. One domain per line. Lines starting with # are ignored.

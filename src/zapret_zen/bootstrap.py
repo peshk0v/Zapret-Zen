@@ -24,6 +24,16 @@ from zapret_zen.services import translation as _tr
 from zapret_zen.services.storage import StorageManager
 from zapret_zen.services.updates import UpdatesManager
 
+
+def _is_appimage_runtime() -> bool:
+    """True when the app is running from an AppImage bundle.
+
+    ``APPIMAGE`` points to the mounted image path and is set by appimaged /
+    the AppImage runtime; ``APPDIR`` is the extracted squashfs mount point.
+    """
+    return bool(os.environ.get("APPIMAGE") or os.environ.get("APPDIR"))
+
+
 @dataclass(slots=True)
 class ApplicationContext:
     paths: AppPaths
@@ -55,6 +65,10 @@ def bootstrap_application() -> ApplicationContext:
     is_portable = not is_packaged_runtime() or portable_flag.exists()
     if is_portable:
         data_root = install_root
+    elif _is_appimage_runtime():
+        # AppImage: store all user data/config/settings in ~/.zapzen so the
+        # image itself stays read-only and upgrades never touch user state.
+        data_root = Path.home() / ".zapzen"
     elif IS_WINDOWS:
         appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
         data_root = Path(appdata) / "Zapret-Zen"

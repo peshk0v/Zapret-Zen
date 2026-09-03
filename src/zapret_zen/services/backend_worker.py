@@ -417,6 +417,32 @@ def _handle_load_components_payload(context, payload, emit_progress):
     return result
 
 
+@_register_action("ensure_zapret_dependencies")
+def _handle_ensure_zapret_dependencies(context, payload, emit_progress):
+    result = context.processes.ensure_zapret_dependencies()
+    _sync_telegram_component_from_services(context)
+    current = context.settings.get()
+    options = context.processes.list_zapret_generals()
+    if not str(current.selected_zapret_general or "").strip() and options:
+        context.settings.update(selected_zapret_general=str(options[0]["id"]))
+    snapshot = _snapshot(context)
+    snapshot["general_options"] = options
+    snapshot["setup_status"] = result
+    return snapshot
+
+
+@_register_action("zapret_sudoers_status")
+def _handle_zapret_sudoers_status(context, payload, emit_progress):
+    return {"configured": context.processes.zapret_sudoers_configured()}
+
+
+@_register_action("configure_zapret_sudoers")
+def _handle_configure_zapret_sudoers(context, payload, emit_progress):
+    result = context.processes.configure_zapret_sudoers()
+    result["general_options"] = context.processes.list_zapret_generals()
+    return result
+
+
 @_register_action("start_enabled_components")
 def _handle_start_enabled_components(context, payload, emit_progress):
     _sync_telegram_component_from_services(context)
@@ -567,6 +593,7 @@ def _handle_apply_settings(context, payload, emit_progress):
         "theme_changed": theme_before != context.settings.get().theme,
         "language_changed": language_before != context.settings.get().language,
         "autostart_changed": autostart_before != bool(context.settings.get().autostart_windows),
+        "native_window_changed": bool(before.native_window_on_linux) != bool(context.settings.get().native_window_on_linux),
         "client_revision": client_revision,
         "zapret_restarted": zapret_restarted,
     }

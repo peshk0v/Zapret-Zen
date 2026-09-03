@@ -96,6 +96,19 @@ cr_install_sh
 tar -C "$OUTPUT_DIR" -czf "$OUTPUT_DIR/zapret_zen_${VERSION}_portable_linux_${ARCH}.tar.gz" "$NAME"
 echo "Created $OUTPUT_DIR/zapret_zen_${VERSION}_portable_linux_${ARCH}.tar.gz"
 
+# Arch-friendly tarball (.tar.xz) using a standard /usr layout.
+ARCH_DIR="$OUTPUT_DIR/$NAME-usr"
+rm -rf "$ARCH_DIR"
+mkdir -p "$ARCH_DIR/usr/bin" "$ARCH_DIR/usr/share/applications" "$ARCH_DIR/usr/share/icons/hicolor/256x256/apps"
+cp -r "$DIST_DIR" "$ARCH_DIR/usr/lib/zapret-zen"
+chmod +x "$ARCH_DIR/usr/lib/zapret-zen/zapret_zen"
+ln -s /usr/lib/zapret-zen/zapret_zen "$ARCH_DIR/usr/bin/zapret-zen"
+cp "$ROOT/assets/zapret-zen.desktop" "$ARCH_DIR/usr/share/applications/zapret-zen.desktop"
+cp "$ROOT/ui_assets/icons/app.png" "$ARCH_DIR/usr/share/icons/hicolor/256x256/apps/zapret-zen.png"
+tar -C "$OUTPUT_DIR" -cJf "$OUTPUT_DIR/zapret_zen_${VERSION}_linux_${ARCH}.tar.xz" "$NAME-usr"
+rm -rf "$ARCH_DIR"
+echo "Created $OUTPUT_DIR/zapret_zen_${VERSION}_linux_${ARCH}.tar.xz"
+
 DEB_ROOT="$OUTPUT_DIR/$NAME.deb"
 rm -rf "$DEB_ROOT"
 mkdir -p "$DEB_ROOT/DEBIAN"
@@ -171,6 +184,10 @@ EOF
 else
   echo "SKIP: rpmbuild not found; skipping .rpm packaging."
 fi
+
+echo "Building AppImage..."
+DIST_DIR="$ROOT/$DIST_DIR" OUTPUT_DIR="$ROOT/$OUTPUT_DIR" VERSION="$VERSION" \
+  "$ROOT/scripts/build_appimage.sh"
 
 rm -rf "$STAGE" "$DEB_ROOT"
 echo "Linux packages prepared in $OUTPUT_DIR"

@@ -1,0 +1,12 @@
+[Unit]
+Description=TG WS Proxy (Zapret-Zen) — Telegram MTProto Proxy worker
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/zapret-zen --run-component tg-ws-proxy
+Restart=no
+RemainAfterExit=no
+
+[Install]
+WantedBy=default.target

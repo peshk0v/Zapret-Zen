@@ -7,11 +7,13 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QAbstractItemView,
+    QPushButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
+from zapret_zen.platform import IS_LINUX
 from zapret_zen.ui.pages.base import BasePage, PageHost
 
 
@@ -38,6 +40,24 @@ class ComponentsPage(BasePage):
         self._title_label = label
         root.addWidget(label)
 
+        if IS_LINUX:
+            header = QWidget()
+            header_layout = QHBoxLayout(header)
+            header_layout.setContentsMargins(0, 0, 0, 0)
+            header_layout.setSpacing(8)
+            self._linux_sudoers_status = QLabel("")
+            self._linux_sudoers_status.setProperty("class", "muted")
+            sudoers_btn = QPushButton(self._t("Настроить автоматические права (root)", "Configure automatic root privileges"))
+            sudoers_btn.setProperty("class", "inlineButton")
+            self._attach_button_animations(sudoers_btn)
+            sudoers_btn.clicked.connect(self._on_configure_sudoers)
+            self._linux_sudoers_button = sudoers_btn
+            self._linux_sudoers_row = header
+            header_layout.addWidget(self._linux_sudoers_status)
+            header_layout.addStretch(1)
+            header_layout.addWidget(sudoers_btn)
+            root.addWidget(header)
+
         self._scroll = QScrollArea()
         self._scroll.setObjectName("ComponentsScroll")
         self._scroll.setWidgetResizable(True)
@@ -56,3 +76,15 @@ class ComponentsPage(BasePage):
         self._register_scroll_arrow(self._scroll)
         self._register_smooth_scroll(self._scroll)
         root.addWidget(self._scroll, 1)
+
+    def _on_configure_sudoers(self) -> None:
+        self._host._submit_backend_task("configure_zapret_sudoers", action_id="linux_sudoers_config")
+
+    def set_sudoers_configured(self, configured: bool) -> None:
+        if not hasattr(self, "_linux_sudoers_status"):
+            return
+        if configured:
+            self._linux_sudoers_status.setText(self._t("Права root настроены", "Root privileges configured"))
+            self._linux_sudoers_button.setText(self._t("Автоматические права настроены", "Automatic privileges configured"))
+        else:
+            self._linux_sudoers_status.setText("")

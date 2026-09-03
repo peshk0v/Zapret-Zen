@@ -1,0 +1,68 @@
+# Maintainer: peshk0v <peshk0v@users.noreply.github.com>
+# Contributor: Zapret-Zen contributors
+#
+# AUR package for Zapret-Zen (desktop hub for managing DPI-bypass utilities).
+#
+# Builds the app from source using the standard Python toolchain and installs
+# to standard Linux FHS paths (/usr/bin, /usr/share) with a freedesktop
+# desktop entry and per-user systemd units for the elevated background
+# components (Zapret, TG WS Proxy).
+#
+# For a prebuilt binary variant see the accompanying `-bin` package template
+# (packaging/linux/aur/zapret-zen-bin/PKGBUILD).
+
+pkgname=zapret-zen
+pkgver=0.0.0
+pkgrel=1
+pkgdesc="Cross-platform desktop hub for managing DPI-bypass utilities (zapret / zapret-rust, tg-ws-proxy)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/peshk0v/Zapret-Zen"
+license=('MIT')
+makedepends=('python-build' 'python-installer' 'python-wheel' 'python-setuptools' 'git')
+depends=(
+  'python'
+  'python-pyside6'
+  'python-certifi'
+  'python-cryptography'
+  'python-pypresence'
+)
+optdepends=(
+  'systemd: per-user service units for elevated background components'
+  'xclip: clipboard support on X11/Wayland'
+)
+source=("$pkgname-$pkgver.tar.gz::https://github.com/peshk0v/Zapret-Zen/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+provides=('zapret-zen')
+conflicts=('zapret-zen')
+
+build() {
+  cd "$srcdir/Zapret-Zen-$pkgver"
+  python -m build --wheel --no-isolation
+}
+
+package() {
+  cd "$srcdir/Zapret-Zen-$pkgver"
+  python -m installer --destdir="$pkgdir" \
+    dist/*.whl
+
+  install -d "$pkgdir/usr/share/applications"
+  install -d "$pkgdir/usr/share/icons/hicolor/256x256/apps"
+  install -d "$pkgdir/usr/lib/systemd/user"
+
+  install -Dm644 assets/zapret-zen.desktop \
+    "$pkgdir/usr/share/applications/zapret-zen.desktop"
+  install -Dm644 ui_assets/icons/app.png \
+    "$pkgdir/usr/share/icons/hicolor/256x256/apps/zapret-zen.png"
+
+  # Per-user systemd units for the elevated background components. These are
+  # installed read-only as templates under /usr; the app writes an activated
+  # copy (with per-machine paths) into ~/.config/systemd/user at runtime, so
+  # nothing here requires root to run.
+  install -Dm644 packaging/linux/aur/zapret-zen-zapret.service \
+    "$pkgdir/usr/lib/systemd/user/zapret-zen-zapret.service"
+  install -Dm644 packaging/linux/aur/zapret-zen-tg-ws-proxy.service \
+    "$pkgdir/usr/lib/systemd/user/zapret-zen-tg-ws-proxy.service"
+
+  # On first login, have the desktop entry autostart the app (user-level).
+  install -d "$pkgdir/usr/share/zapret-zen"
+}

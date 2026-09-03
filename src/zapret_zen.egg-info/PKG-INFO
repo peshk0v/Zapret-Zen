@@ -1,14 +1,14 @@
 Metadata-Version: 2.4
 Name: zapret-zen
 Version: 0.0.0.dev0
-Summary: Windows desktop hub for managing external network utilities and configuration packs.
+Summary: Cross-platform desktop hub for managing external network utilities and configuration packs.
 Requires-Python: >=3.11
 Description-Content-Type: text/markdown
 License-File: LICENSE
 Requires-Dist: PySide6>=6.7
 Requires-Dist: certifi>=2024.0.0
 Requires-Dist: cryptography>=46.0.0
-Requires-Dist: pydivert>=3.1.1
+Requires-Dist: pydivert>=3.1.1; sys_platform == "win32"
 Requires-Dist: pypresence>=4.6
 Provides-Extra: dev
 Requires-Dist: nuitka>=2.7; extra == "dev"
@@ -27,6 +27,9 @@ Dynamic: license-file
 
 <a href="https://peshk0v.github.io/Zapret-Zen/">
   <img src="https://img.shields.io/badge/Официальный_Сайт-Zapret--Zen-42a5f5?style=for-the-badge&logo=github" alt="Официальный сайт проекта" />
+</a>
+<a href="https://github-store.org/app?repo=peshk0v/Zapret-Zen">
+  <img src="https://img.shields.io/badge/Komi_Store-Zapret--Zen-0078D4?style=for-the-badge&logo=github" alt="Komi Store" />
 </a>
 
 [![Version](https://img.shields.io/github/v/release/peshk0v/Zapret-Zen?style=for-the-badge&logo=github&color=5865F2&label=Версия)](https://github.com/peshk0v/Zapret-Zen/releases)

@@ -6,6 +6,7 @@ src/zapret_zen/app.py
 src/zapret_zen/bootstrap.py
 src/zapret_zen/cli_args.py
 src/zapret_zen/main.py
+src/zapret_zen/platform.py
 src/zapret_zen/runtime_env.py
 src/zapret_zen/worker_entry.py
 src/zapret_zen/workers.py
@@ -38,6 +39,7 @@ src/zapret_zen/services/service_rules.py
 src/zapret_zen/services/settings.py
 src/zapret_zen/services/storage.py
 src/zapret_zen/services/tg_proxy_manager.py
+src/zapret_zen/services/tg_proxy_tuner.py
 src/zapret_zen/services/translation.py
 src/zapret_zen/services/updates.py
 src/zapret_zen/services/vpn_detector.py

@@ -21,6 +21,7 @@ class AppSettings:
     language: str = "en"
     start_in_tray: bool = False
     autostart_windows: bool = False
+    native_window_on_linux: bool = False
     auto_run_components: bool = False
     check_updates_on_start: bool = True
     update_branch: str = "release"
@@ -52,6 +53,7 @@ class AppSettings:
     zapret_interface: str = "any"
     favorite_zapret_generals: list[str] = field(default_factory=list)
     general_autotest_done: bool = False
+    linux_zapret_use_sudoers: bool = False
     selected_service_ids: list[str] = field(default_factory=list)
     selected_runtime_mode: str = "zapret"
     zapret_ipset_mode: str = "loaded"

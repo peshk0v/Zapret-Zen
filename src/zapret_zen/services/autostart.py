@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -56,11 +57,14 @@ class AutostartManager:
         self._create_task(self._build_command())
 
     # ── Linux XDG autostart ────────────────────────────────────────────
+    #
+    # User-level autostart on Linux/BSD: a freedesktop .desktop launcher in
+    # $XDG_CONFIG_HOME/autostart (default ~/.config/autostart).  This is pure
+    # user-space and never requires root/sudo; the directory is created if
+    # missing and the file is written with the current user's permissions.
 
     @staticmethod
     def _xdg_autostart_dir() -> Path:
-        import os
-
         xdg = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
         return Path(xdg) / "autostart"
 
@@ -70,31 +74,75 @@ class AutostartManager:
     def _xdg_autostart_exists(self) -> bool:
         return self._xdg_autostart_path().exists()
 
+    def _xdg_exec_line(self) -> str:
+        """Build the Exec= line for the current runtime (frozen or source).
+
+        Uses a quoted, absolute path so launching works regardless of the
+        caller's PATH and survives a shell that reads the .desktop later.
+        """
+        executable = Path(sys.executable)
+        is_source = executable.suffix.lower() == ".exe" or executable.name in (
+            "python",
+            "python3",
+            "zapret-zen",
+        ) or executable.is_dir()
+        if executable.suffix.lower() == ".exe" and executable.name.lower() not in (
+            "python.exe",
+            "python3.exe",
+        ):
+            # Frozen Windows-style binary: exec the binary directly.
+            return f'"{executable}" --autostart-launch'
+        if is_source and executable.is_dir():
+            # A frozen AppDir/self-extracting dir: launch the entrypoint inside.
+            main_module = Path(__file__).resolve().parents[1] / "main.py"
+            if main_module.exists():
+                return f'"{executable / "zapret-zen"}" --autostart-launch'
+        if is_source:
+            main_module = Path(__file__).resolve().parents[1] / "main.py"
+            return f'"{sys.executable}" "{main_module}" --autostart-launch'
+        return f'"{sys.executable}" --autostart-launch'
+
     def _set_xdg_autostart(self, enabled: bool) -> bool:
         target = self._xdg_autostart_path()
         if not enabled:
-            if target.exists():
+            try:
                 target.unlink(missing_ok=True)
+            except OSError as error:
+                self.logging.log("warning", "Failed to remove autostart entry", path=str(target), error=str(error))
+                return target.exists()
             return not target.exists()
-        target.parent.mkdir(parents=True, exist_ok=True)
-        executable = Path(sys.executable)
-        if executable.suffix.lower() == ".exe" or executable.name in ("python", "python3"):
-            main_module = Path(__file__).resolve().parents[1] / "main.py"
-            exec_line = f'{sys.executable} "{main_module}" --autostart-launch'
-        else:
-            exec_line = f'{sys.executable} --autostart-launch'
-        content = (
-            "[Desktop Entry]\n"
-            "Type=Application\n"
-            "Name=Zapret-Zen\n"
-            "Comment=Zapret-Zen autostart\n"
-            f"Exec={exec_line}\n"
-            "Hidden=false\n"
-            "NoDisplay=false\n"
-            "X-GNOME-Autostart-enabled=true\n"
-        )
-        target.write_text(content, encoding="utf-8")
-        return target.exists()
+        try:
+            # User-level dir; exists_ok makes repeated toggles a no-op.
+            os.makedirs(target.parent, mode=0o755, exist_ok=True)
+            icon_name = "zapret-zen"
+            content = (
+                "[Desktop Entry]\n"
+                "Type=Application\n"
+                "Name=Zapret-Zen\n"
+                "Name[ru]=Запрет-Зен\n"
+                "Comment=Zapret-Zen autostart\n"
+                "Comment[ru]=Автозапуск Zapret-Zen\n"
+                f"Exec={self._xdg_exec_line()}\n"
+                f"Icon={icon_name}\n"
+                "Terminal=false\n"
+                "Hidden=false\n"
+                "NoDisplay=false\n"
+                "X-GNOME-Autostart-enabled=true\n"
+            )
+            target.write_text(content, encoding="utf-8")
+            os.chmod(target, 0o644)
+        except OSError as error:
+            self.logging.log(
+                "warning",
+                "Failed to write autostart entry",
+                path=str(target),
+                error=str(error),
+            )
+            return False
+        ok = target.exists()
+        if ok:
+            self.logging.log("info", "Linux autostart entry written", path=str(target))
+        return ok
 
     # ── Windows schtasks / registry ────────────────────────────────────
 

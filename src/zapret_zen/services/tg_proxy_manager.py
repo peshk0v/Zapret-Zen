@@ -4,7 +4,6 @@ import os
 import secrets
 import subprocess
 import sys
-import time
 from pathlib import Path
 from typing import Any
 
@@ -98,16 +97,22 @@ class TelegramProxyManager:
             self.settings.update(tg_proxy_secret=secret)
         return secret
 
-    def prompt_proxy_link(self) -> None:
+    def prompt_proxy_link(self) -> str:
         settings = self.settings.get()
         secret = self.ensure_secret()
-        self._ensure_telegram_and_open_proxy_link(
+        return self.build_proxy_link(
             host=settings.tg_proxy_host,
             port=int(settings.tg_proxy_port),
             secret=secret,
         )
 
-    def _ensure_telegram_and_open_proxy_link(self, *, host: str, port: int, secret: str) -> None:
-        import webbrowser
-        proxy_url = f"https://t.me/proxy?server={host}&port={port}&secret={secret}"
-        webbrowser.open(proxy_url)
+    def build_proxy_link(self, *, host: str, port: int, secret: str) -> str:
+        """Return the tg:// proxy deep link without launching a browser or Telegram.
+
+        Callers are expected to copy this to the clipboard.  Never uses ``webbrowser``/
+        ``os.startfile`` (which previously froze the UI and opened an empty browser).
+        """
+        return (
+            f"tg://proxy?server={host}"
+            f"&port={int(port)}&secret=dd{secret}"
+        )
