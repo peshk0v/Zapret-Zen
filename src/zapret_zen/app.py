@@ -12,7 +12,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from zapret_zen.platform import IS_WINDOWS, IS_LINUX, is_admin
+from zapret_zen.platform_utils import IS_WINDOWS, IS_LINUX, is_admin
 
 if IS_WINDOWS:
     import winreg

@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from zapret_zen.platform import IS_WINDOWS
+from zapret_zen.platform_utils import IS_WINDOWS
 from zapret_zen.services.logging_service import LoggingManager
 from zapret_zen.services.settings import SettingsManager
 

@@ -24,7 +24,7 @@ from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 
 from zapret_zen.domain import ComponentDefinition, ComponentState
-from zapret_zen.platform import (
+from zapret_zen.platform_utils import (
     IS_WINDOWS,
     IS_LINUX,
     build_elevated_command,

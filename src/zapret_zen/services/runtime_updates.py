@@ -8,7 +8,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Callable
 
-from zapret_zen.platform import IS_LINUX, IS_WINDOWS
+from zapret_zen.platform_utils import IS_LINUX, IS_WINDOWS
 from zapret_zen.services.github_network import GitHubNetworkClient
 from zapret_zen.services.logging_service import LoggingManager
 from zapret_zen.services.storage import StorageManager

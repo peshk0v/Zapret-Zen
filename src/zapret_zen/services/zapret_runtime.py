@@ -7,7 +7,7 @@ import ctypes
 from pathlib import Path
 from typing import Any
 
-from zapret_zen.platform import IS_WINDOWS, system_hosts_path
+from zapret_zen.platform_utils import IS_WINDOWS, system_hosts_path
 from zapret_zen.services.logging_service import LoggingManager
 from zapret_zen.services.service_catalog import ALWAYS_APPLY_SERVICE_IDS
 from zapret_zen.services.service_rules import SERVICE_RULES

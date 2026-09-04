@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from subprocess import CompletedProcess
 
-from zapret_zen.platform import IS_WINDOWS
+from zapret_zen.platform_utils import IS_WINDOWS
 from zapret_zen.services.logging_service import LoggingManager
 
 if IS_WINDOWS:

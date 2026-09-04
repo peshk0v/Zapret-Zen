@@ -7,7 +7,7 @@ from pathlib import Path
 from subprocess import CompletedProcess
 from typing import Mapping
 
-from zapret_zen.platform import IS_LINUX
+from zapret_zen.platform_utils import IS_LINUX
 from zapret_zen.services.logging_service import LoggingManager
 
 

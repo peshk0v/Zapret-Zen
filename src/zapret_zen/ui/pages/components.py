@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from zapret_zen.platform import IS_LINUX
+from zapret_zen.platform_utils import IS_LINUX
 from zapret_zen.ui.pages.base import BasePage, PageHost
 
 

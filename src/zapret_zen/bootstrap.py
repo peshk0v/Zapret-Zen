@@ -6,7 +6,7 @@ import secrets
 from typing import Any
 
 from zapret_zen.domain import AppPaths
-from zapret_zen.platform import IS_WINDOWS
+from zapret_zen.platform_utils import IS_WINDOWS
 from zapret_zen.runtime_env import development_install_root, is_packaged_runtime, packaged_install_root, packaged_resource_root
 from zapret_zen.ui.theme import load_theme_registry
 from zapret_zen.services.autostart import AutostartManager

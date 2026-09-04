@@ -71,7 +71,7 @@ from PySide6.QtWidgets import (
 )
 
 from zapret_zen.bootstrap import ApplicationContext
-from zapret_zen.platform import (
+from zapret_zen.platform_utils import (
     IS_LINUX,
     linux_default_native_window,
     system_hosts_path,

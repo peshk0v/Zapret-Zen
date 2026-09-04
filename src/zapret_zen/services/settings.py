@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import asdict
 
 from zapret_zen.domain import AppSettings
-from zapret_zen.platform import linux_default_native_window
+from zapret_zen.platform_utils import linux_default_native_window
 from zapret_zen.services.service_catalog import SERVICE_PRESET_IDS
 from zapret_zen.services.storage import StorageManager
 

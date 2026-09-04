@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from zapret_zen.domain import AppPaths
-from zapret_zen.platform import IS_WINDOWS
+from zapret_zen.platform_utils import IS_WINDOWS
 from zapret_zen.ui.theme import ensure_theme_files
 
 
