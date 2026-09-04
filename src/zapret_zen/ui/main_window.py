@@ -14562,7 +14562,7 @@ class MainWindow(QMainWindow):
                 error_text = str(raw.get("error", "")).strip() or self._t("failed to start")
                 failed.append(f"{label} - {error_text}")
 
-        chosen_id = best_working_id or best_id
+        chosen_id = best_working_id or (best_id if best_score > 0 else "")
         auto_applied = False
         if self._general_test_auto_apply and chosen_id:
             chosen_raw = next((raw for raw in checked if isinstance(raw, dict) and str(raw.get("id", "")) == chosen_id), {})

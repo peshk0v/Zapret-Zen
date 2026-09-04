@@ -27,6 +27,7 @@ from zapret_zen.domain import ComponentDefinition, ComponentState
 from zapret_zen.platform_utils import (
     IS_WINDOWS,
     IS_LINUX,
+    bat_strategy_args,
     build_elevated_command,
     configure_zapret_sudoers as platform_configure_zapret_sudoers,
     dev_null,
@@ -827,13 +828,13 @@ class ProcessManager:
             return state
 
         selected_option = self._resolve_selected_general_option()
-        strategy_name = ""
+        strategy_file = ""
         if selected_option:
-            strategy_name = Path(selected_option["path"]).stem
-        if strategy_name and IS_LINUX:
+            strategy_file = Path(selected_option["path"]).name
+        if IS_LINUX and strategy_file:
             selected_bat = Path(selected_option["path"])
             strategy_dir = runtime_dir / "zapret-discord-youtube-linux"
-            strategy_dest = strategy_dir / strategy_name
+            strategy_dest = strategy_dir / strategy_file
             if selected_bat.exists() and selected_bat != strategy_dest:
                 copied = False
                 try:
@@ -854,13 +855,76 @@ class ProcessManager:
                     except Exception:
                         pass
 
+        if IS_LINUX:
+            strategy_dir = runtime_dir / "zapret-discord-youtube-linux"
+            nfqws_path = runtime_dir / "bin" / "nfqws"
+            nfqws_missing = not (nfqws_path.exists() and nfqws_path.is_file())
+            strategy_src = strategy_dir / strategy_file if strategy_file else None
+            strat_missing = bool(strategy_file) and not (
+                strategy_src is not None and strategy_src.exists()
+            )
+            if nfqws_missing:
+                state = ComponentState(
+                    component_id=component_id,
+                    status="error",
+                    last_error=(
+                        f"nfqws is not installed at {nfqws_path}. Run the runtime "
+                        "update / 'Ensure zapret dependencies' first and retry."
+                    ),
+                )
+                self._states[component_id] = state
+                self._invalidate_state_cache()
+                return state
+            if strat_missing:
+                state = ComponentState(
+                    component_id=component_id,
+                    status="error",
+                    last_error=(
+                        f"Selected strategy '{strategy_file}' is not present in the "
+                        f"zapret-rust strategy repo ({strategy_dir}). Run the runtime "
+                        "update / 'Ensure zapret dependencies' first and retry."
+                    ),
+                )
+                self._states[component_id] = state
+                self._invalidate_state_cache()
+                return state
+            if strategy_src is not None and strategy_src.exists():
+                parsed = bat_strategy_args(
+                    strategy_src,
+                    bin_dir=strategy_dir / "bin",
+                    lists_dir=strategy_dir / "lists",
+                )
+                if parsed.error:
+                    state = ComponentState(
+                        component_id=component_id,
+                        status="error",
+                        last_error=f"Strategy '{strategy_file}' is not usable on Linux: {parsed.error}",
+                    )
+                    self._states[component_id] = state
+                    self._invalidate_state_cache()
+                    return state
+                if parsed.missing_bins:
+                    state = ComponentState(
+                        component_id=component_id,
+                        status="error",
+                        last_error=(
+                            f"Strategy '{strategy_file}' references missing fake objects: "
+                            f"{', '.join(parsed.missing_bins[:3])}"
+                        ),
+                    )
+                    self._states[component_id] = state
+                    self._invalidate_state_cache()
+                    return state
+
         cmd = [str(binary)]
         settings = self.settings.get()
         interface = (getattr(settings, "zapret_interface", "any") or "any").strip()
         if interface:
             cmd.extend(["--interface", interface])
-        if strategy_name:
-            cmd.extend(["--strategy", strategy_name])
+        if IS_LINUX:
+            cmd.extend(["--cache-dir", str(runtime_dir)])
+        if strategy_file:
+            cmd.extend(["--strategy", strategy_file])
 
         game_mode = (settings.zapret_game_filter_mode or "disabled").strip().lower()
         if game_mode in ("all", "tcp", "tcpudp"):
@@ -910,10 +974,18 @@ class ProcessManager:
 
         running = False
         for _ in range(24):
-            if _platform_is_image_running("nfqws") or _platform_is_image_running("zapret-rust"):
+            if _platform_is_image_running("nfqws"):
                 running = True
                 break
+            parent_up = _platform_is_image_running("zapret-rust")
+            if systemd_started:
+                parent_up = parent_up or self.systemd.is_active(component_id)
+            elif process is not None:
+                parent_up = parent_up or process.poll() is None
+            if not parent_up:
+                break
             time.sleep(0.25)
+        time.sleep(0.4)
 
         if running:
             pid = self.systemd.main_pid(component_id) if systemd_started else (process.pid if process else None)
@@ -921,18 +993,20 @@ class ProcessManager:
             self.logging.log("info", "Zapret-rust started", binary=str(binary), systemd=systemd_started)
         else:
             self._close_source_log_stream("zapret")
+            self._force_stop_zapret_runtime()
             log_hint = self._recent_source_log_error("zapret")
             error_message = log_hint or (
-                "zapret-rust did not start. The selected strategy could not be applied; "
-                "see the zapret log for the exact error. Root privileges are handled "
-                "automatically and do not require a password dialog."
+                "zapret-rust did not start nfqws. The selected strategy could not "
+                "be applied; see the zapret log for the exact error. Root "
+                "privileges are handled automatically and do not require a "
+                "password dialog."
             )
             state = ComponentState(
                 component_id=component_id,
                 status="error",
                 last_error=error_message,
             )
-            self.logging.log("error", "Zapret-rust failed to start", error=error_message, systemd=systemd_started)
+            self.logging.log("error", "Zapret-rust failed to start nfqws", error=error_message, systemd=systemd_started)
         self._states[component_id] = state
         self._invalidate_state_cache()
         return state
@@ -2682,9 +2756,23 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
         return candidates
 
     def _load_standard_test_targets(self) -> list[dict[str, str]]:
-        targets_file = self.storage.paths.runtime_dir / "zapret-discord-youtube" / "utils" / "targets.txt"
+        candidate_files: list[Path] = []
+        if IS_LINUX:
+            candidate_files.append(
+                self.storage.paths.runtime_dir
+                / "zapret-discord-youtube-rust"
+                / "zapret-discord-youtube-linux"
+                / "utils"
+                / "targets.txt"
+            )
+        candidate_files.append(self.storage.paths.runtime_dir / "zapret-discord-youtube" / "utils" / "targets.txt")
         targets: list[dict[str, str]] = []
-        if targets_file.exists():
+        targets_file: Path | None = None
+        for candidate in candidate_files:
+            if candidate.exists():
+                targets_file = candidate
+                break
+        if targets_file is not None:
             pattern = re.compile(r'^\s*(.+?)\s*=\s*"(.+)"\s*$')
             for raw in targets_file.read_text(encoding="utf-8", errors="ignore").splitlines():
                 match = pattern.match(raw.strip())

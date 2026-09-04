@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -650,3 +652,111 @@ def dev_null() -> str:
     if IS_WINDOWS:
         return "NUL"
     return "/dev/null"
+
+
+# ---------------------------------------------------------------------------
+# Zapret strategy (.bat) parsing for the Linux nfqws backend
+# ---------------------------------------------------------------------------
+# Mirrors the strategy parser used by zapret-rust (src/strategy/parser.rs) so
+# the GUI applies exactly the same desync profiles that zapret-rust would run
+# for a given strategy, and can validate a strategy *before* declaring it
+# running during auto-selection. On Windows this is bypassed in favour of the
+# native winws.exe path (components._start_zapret_winws).
+
+
+@dataclass(frozen=True)
+class StrategyParseResult:
+    """Parsed strategy arguments plus human-readable diagnostics."""
+
+    args: tuple[str, ...]
+    tcp_ports: str
+    udp_ports: str
+    profiles: int
+    error: str = ""
+    missing_bins: tuple[str, ...] = ()
+
+
+def _strip_bat_continuations(content: str) -> str:
+    """Remove Windows-style ``^`` line continuations (only at end of line)."""
+    return re.sub(r"(?m)\^\s*$", "", content)
+
+
+def _translate_bat_placeholders(content: str, *, bin_dir: Path, lists_dir: Path) -> str:
+    """Replace ``%BIN%``/``%LISTS%`` with absolute paths and drop other ``%VAR%``.
+
+    zapret-rust replaces ``%BIN%`` with ``bin/`` (relative to the strategy repo)
+    and runs nfqws with that directory as the cwd; here bin_dir/lists_dir are
+    already the repo's ``bin/``/``lists/`` dirs so the fake objects end up as
+    absolute paths that we can check for existence.
+    """
+    content = content.replace("%BIN%", f"{bin_dir}/")
+    content = content.replace("%LISTS%", f"{lists_dir}/")
+    return re.sub(r"(?i)%\s*[A-Z][A-Z0-9_]*\s*%", "", content)
+
+
+def bat_strategy_args(
+    strategy_path: Path,
+    *,
+    bin_dir: Path,
+    lists_dir: Path,
+) -> StrategyParseResult:
+    """Validate a Zapret strategy .bat for the Linux nfqws backend (zapret-rust).
+
+    Mirrors the checks zapret-rust performs in ``src/strategy/parser.rs`` and
+    ``src/runner.rs`` so Zapret-Zen can reject a broken strategy *before*
+    launching zapret-rust, instead of declaring it "running" while nfqws never
+    actually starts. This is a pre-flight audit only - zapret-rust itself does
+    the real argument construction when it runs nfqws.
+    """
+    if not strategy_path.exists():
+        return StrategyParseResult(tuple(), "", "", 0, error=f"strategy file not found: {strategy_path}")
+    try:
+        raw = strategy_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return StrategyParseResult(tuple(), "", "", 0, error=f"cannot read strategy: {exc}")
+
+    content = raw.replace("\r", "")
+    content = _strip_bat_continuations(content).replace("\r", "")
+    content = _translate_bat_placeholders(content, bin_dir=bin_dir, lists_dir=lists_dir)
+
+    wf_tcp = re.search(r"--wf-tcp=([0-9,\-]+)", content)
+    wf_udp = re.search(r"--wf-udp=([0-9,\-]+)", content)
+    if wf_tcp is None or wf_udp is None:
+        return StrategyParseResult(
+            tuple(),
+            wf_tcp.group(1) if wf_tcp else "",
+            wf_udp.group(1) if wf_udp else "",
+            0,
+            error="--wf-tcp/--wf-udp not found; not a valid nfqws strategy",
+        )
+
+    filters = re.findall(r"--filter-(?:tcp|udp)=([0-9,\-]+)", content)
+    if not filters:
+        return StrategyParseResult(
+            tuple(),
+            wf_tcp.group(1),
+            wf_udp.group(1),
+            0,
+            error="no --filter-tcp/--filter-udp profiles found; strategy would not desync anything",
+        )
+
+    missing_bins: list[str] = []
+    for token in re.findall(
+        r"(?:--dpi-desync-fake-[\w-]+|--dpi-desync-split-seqovl-pattern)=([^\s^]+)",
+        content,
+    ):
+        value = token.strip().strip('"')
+        if not value or not value.endswith(".bin"):
+            continue
+        if not Path(value).exists():
+            missing_bins.append(value)
+
+    args = tuple(token for token in content.split() if token.startswith("-"))
+
+    return StrategyParseResult(
+        args,
+        wf_tcp.group(1),
+        wf_udp.group(1),
+        len(filters),
+        missing_bins=tuple(missing_bins),
+    )

@@ -105,11 +105,17 @@ class RuntimeDiagnostics:
                     "total_targets": outcome.get("total_targets", 0),
                 }
             self._stop_component("zapret")
-        if best_result is not None and best_result.get("id"):
+        if best_result is not None and int(best_result.get("passed_targets", 0) or 0) > 0 and best_result.get("id"):
             self.settings.update(selected_zapret_general=str(best_result["id"]))
             return best_result
         self.settings.update(selected_zapret_general=original)
-        return None
+        return {
+            "status": "error",
+            "error": "no working strategy found",
+            "id": original,
+            "passed_targets": 0,
+            "total_targets": 0,
+        }
 
     def run_single_general_diagnostic(
         self,
