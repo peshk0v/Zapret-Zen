@@ -4,7 +4,6 @@ import sys
 from pathlib import Path
 
 from PIL import Image
-from PySide6.QtGui import QImage
 
 
 def main() -> int:
@@ -13,15 +12,15 @@ def main() -> int:
     ico_path = root / "ui_assets" / "icons" / "app.ico"
     shell_png_path = root / "ui_assets" / "icons" / "installer_runtime_icon.png"
     shell_ico_path = root / "ui_assets" / "icons" / "app_shell.ico"
-    image = QImage(str(png_path))
-    if image.isNull():
-        raise RuntimeError(f"Failed to load PNG icon: {png_path}")
-    try:
-        if not image.save(str(ico_path), "ICO"):
-            raise RuntimeError(f"Failed to save ICO icon: {ico_path}")
-    except Exception:
-        if not image.save(str(ico_path), "ICO"):
-            raise RuntimeError(f"Failed to save ICO icon: {ico_path}")
+
+    # Build the single-resolution runtime ICO from the main PNG.  Uses Pillow
+    # (already a dependency) instead of importing PySide6.QtGui so the build
+    # script does not require Qt/OpenGL system libraries (libEGL/libGL) just to
+    # re-encode an icon.
+    image = Image.open(str(png_path)).convert("RGBA")
+    image.save(str(ico_path), format="ICO")
+
+    # Build the multi-resolution launcher/shell ICO (16..256px).
     shell_source = shell_png_path if shell_png_path.exists() else png_path
     base = Image.open(shell_source).convert("RGBA")
     if base.width < 256 or base.height < 256:

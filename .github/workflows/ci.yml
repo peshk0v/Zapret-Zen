@@ -49,12 +49,25 @@ jobs:
         with:
           arch: x64
 
-      # Linux-specific: required system libs/tools.
-      - name: Install Linux system tools
+      # Linux-specific: required system libs/tools for the PySide6/Nuitka build
+      # (OpenGL/EGL/X11 libs used by Qt at build/bundle time, even though the
+      # icon-sync script itself now only depends on Pillow).
+      - name: Install Linux system dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y file
+          sudo apt-get install -y \
+            file \
+            libegl1 \
+            libgl1 \
+            libgl1-mesa-dev \
+            libegl1-mesa \
+            libxkbcommon0 \
+            libxkbcommon-x11-0 \
+            libxcb-cursor0 \
+            libfontconfig1 \
+            libdbus-1-3 \
+            libgles2
 
       - name: Syntax / import smoke check
         shell: bash
