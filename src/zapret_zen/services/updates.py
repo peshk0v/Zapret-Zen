@@ -472,6 +472,9 @@ class UpdatesManager:
         status = str(result.get("status", ""))
         if status not in {"available", "up-to-date"}:
             return None
+        cached_version = str(result.get("current_version", ""))
+        if cached_version and cached_version != __version__:
+            return None
         cached_branch = str(raw.get("branch", "") or "")
         if update_branch and cached_branch != update_branch:
             return None

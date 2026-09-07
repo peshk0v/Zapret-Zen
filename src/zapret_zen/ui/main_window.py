@@ -3044,6 +3044,20 @@ def _chrome_surface_color(theme: str) -> QColor:
     return QColor("#101726")
 
 
+_WINDOW_SHADOW_LAYERS: tuple[tuple[int, int], ...] = ((10, 8), (6, 16), (3, 30))
+_LIGHT_WINDOW_SHADOW_LAYERS: tuple[tuple[int, int], ...] = ((10, 4), (6, 9), (3, 18))
+
+
+def _window_shadow_color(theme: str) -> QColor:
+    if theme == "light blue":
+        return QColor("#b7c5d6")
+    if theme == "light":
+        return QColor("#c6d0de")
+    if is_light_theme(theme):
+        return QColor("#c6d0de")
+    return QColor(0, 0, 0)
+
+
 def _load_ui_font_family(ui_assets_dir: Path) -> str:
     font_path = ui_assets_dir / "fonts" / "JetBrainsSans[wght]-VF.ttf"
     family = "JetBrains Sans"
@@ -3243,6 +3257,7 @@ class ContentGlowWidget(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._accent_color = QColor("#7380ff")
+        self._theme = "dark"
         self._glow_x = 0.5
         self._glow_y = 0.5
         self._glow_intensity = 1.0
@@ -3251,6 +3266,10 @@ class ContentGlowWidget(QWidget):
 
     def set_accent_color(self, hex_color: str) -> None:
         self._accent_color = QColor(hex_color)
+        self.update()
+
+    def set_theme(self, theme: str) -> None:
+        self._theme = theme
         self.update()
 
     def set_glow_position(self, x: float, y: float, *, animated: bool = True, duration: int = 400) -> None:
@@ -3340,9 +3359,10 @@ class ContentGlowWidget(QWidget):
         # Window shadow: multi-layer stroke around the frame
         shadow_path = QPainterPath()
         shadow_path.addRoundedRect(inner.adjusted(-0.5, -0.5, 0.5, 0.5), 16, 16)
-        layers = [(10, 8), (6, 16), (3, 30)]
+        shadow_color = _window_shadow_color(self._theme)
+        layers = _LIGHT_WINDOW_SHADOW_LAYERS if is_light_theme(self._theme) else _WINDOW_SHADOW_LAYERS
         for width, alpha in layers:
-            pen = QPen(QColor(0, 0, 0, alpha), width)
+            pen = QPen(QColor(shadow_color.red(), shadow_color.green(), shadow_color.blue(), alpha), width)
             pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
             painter.setPen(pen)
             painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -9549,6 +9569,7 @@ class MainWindow(QMainWindow):
             self.power_aura.set_power_theme(theme, accent)
         if self._pages_host is not None:
             self._pages_host.set_accent_color(accent)
+            self._pages_host.set_theme(theme)
             self._pages_host.setVisible(theme != "oled")
         sidebar = self.findChild(SidebarPanel, "Sidebar")
         if sidebar is not None:
