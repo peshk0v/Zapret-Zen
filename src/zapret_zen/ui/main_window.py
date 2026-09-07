@@ -5129,7 +5129,6 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(3600, self._maybe_run_first_general_autotest)
         QTimer.singleShot(4800, self._check_updates_on_start)
         QTimer.singleShot(5600, self._check_component_updates_background)
-        QTimer.singleShot(9000, self._maybe_run_first_tg_proxy_tuning)
 
     def _check_component_updates_background(self) -> None:
         if self._launch_hidden:
@@ -7611,13 +7610,13 @@ class MainWindow(QMainWindow):
         tune_layout = QHBoxLayout(tune_row)
         tune_layout.setContentsMargins(0, 8, 0, 0)
         tune_layout.setSpacing(8)
-        tune_fast_btn = QPushButton(self._t("Быстрый подбор моста", "Pick bridge fast"))
+        tune_fast_btn = QPushButton(self._t("Быстрый подбор моста [Beta]", "Pick bridge fast [Beta]"))
         tune_fast_btn.setProperty("class", "primary")
         tune_fast_btn.setMinimumHeight(36)
         tune_fast_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         tune_fast_btn.clicked.connect(lambda: self._start_tg_proxy_tuning_from_settings("fast"))
         tune_layout.addWidget(tune_fast_btn, 1)
-        tune_full_btn = QPushButton(self._t("Полный подбор", "Pick best settings"))
+        tune_full_btn = QPushButton(self._t("Полный подбор [Beta]", "Pick best settings [Beta]"))
         tune_full_btn.setProperty("class", "primary")
         tune_full_btn.setMinimumHeight(36)
         tune_full_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -8855,51 +8854,6 @@ class MainWindow(QMainWindow):
         self._settings_diag_cancelled = True
         if self.context.backend is not None and self._settings_diag_task_id:
             self.context.backend.cancel(self._settings_diag_task_id)
-
-    def _maybe_run_first_tg_proxy_tuning(self) -> None:
-        if self._launch_hidden or self._onboarding_active:
-            return
-        if self._tg_tuning_task_id or self._tg_tuning_dialog is not None:
-            return
-        settings = self.context.settings.get()
-        if settings.tg_proxy_tuning_done:
-            return
-        if "telegram-desktop" not in (settings.selected_service_ids or []):
-            return
-        if "tg-ws-proxy" not in settings.enabled_component_ids:
-            return
-        if self._skip_autosettings:
-            self._submit_backend_task("set_tg_proxy_tuning_done", {"done": True})
-            return
-        message = self._t(
-            "Подобрать настройки для TG WS Proxy? Проверим мосты и прямое соединение и применим лучший вариант.",
-            "Pick the fastest TG WS Proxy settings? Bridges and the direct connection will be tested and the best option applied.",
-        )
-        dialog = AppDialog(self, self.context, self._t("Подобрать настройки", "Pick best settings"))
-        label = QLabel(message)
-        label.setWordWrap(True)
-        dialog.body_layout.addWidget(label)
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(8)
-        btn_row.addStretch()
-        tune_btn = QPushButton(self._t("Подобрать"))
-        tune_btn.setObjectName("DialogPrimaryButton")
-        tune_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        tune_btn.setMinimumHeight(36)
-        tune_btn.clicked.connect(lambda: dialog.done(1))
-        btn_row.addWidget(tune_btn)
-        skip_btn = QPushButton(self._t("Больше не предлагать"))
-        skip_btn.setObjectName("DialogSecondaryButton")
-        skip_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        skip_btn.setMinimumHeight(36)
-        skip_btn.clicked.connect(lambda: dialog.done(2))
-        btn_row.addWidget(skip_btn)
-        dialog.body_layout.addLayout(btn_row)
-        result = dialog.exec()
-        if result == 1:
-            self._run_tg_proxy_tuning_popup("fast")
-        else:
-            self._submit_backend_task("set_tg_proxy_tuning_done", {"done": True})
 
     def _start_tg_proxy_tuning_from_settings(self, mode: str = "full") -> None:
         self._run_tg_proxy_tuning_popup(mode)
@@ -13708,7 +13662,6 @@ class MainWindow(QMainWindow):
             self._pump_isolated_profile_benchmark()
             self.refresh_all()
             QTimer.singleShot(0, self._restore_sidebar_after_onboarding)
-            QTimer.singleShot(2500, self._maybe_run_first_tg_proxy_tuning)
             return
         self._stop_onboarding_glow_orbit()
         pixmap = self._onboarding_widget.grab()
@@ -13740,7 +13693,6 @@ class MainWindow(QMainWindow):
             overlay.hide()
             overlay.deleteLater()
             QTimer.singleShot(80, self._restore_sidebar_after_onboarding)
-            QTimer.singleShot(2500, self._maybe_run_first_tg_proxy_tuning)
 
         anim.finished.connect(_finish)
         overlay._finish_fade_animation = anim  # type: ignore[attr-defined]
@@ -15148,45 +15100,86 @@ class MainWindow(QMainWindow):
         elif component_id == "tg_ws_proxy":
             self._update_tg_ws_proxy_runtime()
 
+    def _telegram_release_asset_url(self, release: object, *, want_arm: bool) -> str:
+        if not isinstance(release, dict):
+            return ""
+        assets = release.get("assets") or []
+        preferred_markers = ("arm64", "arm") if want_arm else ("x64",)
+        for asset in assets:
+            if not isinstance(asset, dict):
+                continue
+            name = str(asset.get("name") or "").lower()
+            url = str(asset.get("browser_download_url") or "").strip()
+            if not url or not name.endswith(".exe"):
+                continue
+            if "tsetup" not in name:
+                continue
+            if any(marker in name for marker in preferred_markers):
+                return url
+        for asset in assets:
+            if not isinstance(asset, dict):
+                continue
+            name = str(asset.get("name") or "").lower()
+            url = str(asset.get("browser_download_url") or "").strip()
+            if url and name.startswith("tsetup.") and name.endswith(".exe"):
+                return url
+        return ""
+
     def _telegram_download_url(self) -> str:
         machine = platform.machine().lower()
         want_arm = "arm" in machine or "aarch64" in machine
-        fallback = (
-            "https://github.com/telegramdesktop/tdesktop/releases/latest/download/tsetup-arm64.exe"
-            if want_arm
-            else "https://github.com/telegramdesktop/tdesktop/releases/latest/download/tsetup-x64.exe"
-        )
+        release_page = "https://github.com/telegramdesktop/tdesktop/releases/latest"
+        releases: list[object] = []
         try:
             payload = self.context.updates.github.github_json(
-                "https://api.github.com/repos/telegramdesktop/tdesktop/releases/latest",
-                timeout=10,
+                "https://api.github.com/repos/telegramdesktop/tdesktop/releases?per_page=100",
+                timeout=15,
                 purpose="telegram-release-metadata",
             )
-            if not isinstance(payload, dict):
-                return fallback
-            assets = payload.get("assets") or []
-            preferred_markers = ("arm64", "arm") if want_arm else ("x64",)
-            for asset in assets:
-                if not isinstance(asset, dict):
-                    continue
-                name = str(asset.get("name") or "").lower()
-                url = str(asset.get("browser_download_url") or "").strip()
-                if not url or not name.endswith(".exe"):
-                    continue
-                if "tsetup" not in name:
-                    continue
-                if any(marker in name for marker in preferred_markers):
-                    return url
-            for asset in assets:
-                if not isinstance(asset, dict):
-                    continue
-                name = str(asset.get("name") or "").lower()
-                url = str(asset.get("browser_download_url") or "").strip()
-                if url and name.startswith("tsetup.") and name.endswith(".exe"):
-                    return url
         except Exception:
-            return fallback
-        return fallback
+            try:
+                payload = self.context.updates.github.github_json(
+                    "https://api.github.com/repos/telegramdesktop/tdesktop/releases/latest",
+                    timeout=10,
+                    purpose="telegram-release-metadata",
+                )
+            except Exception:
+                return release_page
+        if isinstance(payload, list):
+            releases = [entry for entry in payload if isinstance(entry, dict)]
+        elif isinstance(payload, dict):
+            releases = [payload]
+        if not releases:
+            return release_page
+        for release in releases:
+            if bool(release.get("draft")) or bool(release.get("prerelease")):
+                continue
+            url = self._telegram_release_asset_url(release, want_arm=want_arm)
+            if url:
+                self.context.updates.logging.log(
+                    "info",
+                    "Telegram Desktop release selected",
+                    tag=str(release.get("tag_name") or ""),
+                    url=url,
+                )
+                return url
+        for release in releases:
+            if bool(release.get("draft")):
+                continue
+            url = self._telegram_release_asset_url(release, want_arm=want_arm)
+            if url:
+                self.context.updates.logging.log(
+                    "info",
+                    "Telegram Desktop prerelease selected (no stable asset)",
+                    tag=str(release.get("tag_name") or ""),
+                    url=url,
+                )
+                return url
+        self.context.updates.logging.log(
+            "warning",
+            "No Telegram Desktop Windows asset found in checked releases; opening the releases page",
+        )
+        return release_page
 
     def _open_external_url(self, url: str) -> None:
         if not url:
