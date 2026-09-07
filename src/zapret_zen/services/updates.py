@@ -18,6 +18,7 @@ from typing import Callable
 
 from zapret_zen import __version__
 from zapret_zen.domain import UpdateInfo
+from zapret_zen.runtime_env import is_packaged_runtime
 from zapret_zen.services.github_network import GitHubNetworkClient, is_github_rate_limit_error
 from zapret_zen.services.logging_service import LoggingManager
 from zapret_zen.services.storage import StorageManager
@@ -587,6 +588,8 @@ class UpdatesManager:
         return max(valid) if valid else None
 
     def _installed_build_timestamp(self) -> datetime | None:
+        if not is_packaged_runtime():
+            return None
         candidates: list[Path] = []
         try:
             candidates.append(Path(sys.executable))
@@ -847,7 +850,10 @@ class UpdatesManager:
         m = re.match(r"(\d+(?:\.\d+)*)", version)
         if not m:
             return (0,)
-        base = tuple(int(p) for p in m.group(1).split("."))
+        base_parts = [int(p) for p in m.group(1).split(".")]
+        while len(base_parts) > 1 and base_parts[-1] == 0:
+            base_parts.pop()
+        base = tuple(base_parts)
         remaining = version[m.end():]
         suffix_weights = {"": 3, "p": 2, "b": 1, "d": 0}
         suffix_letter = ""

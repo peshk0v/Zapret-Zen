@@ -12,6 +12,7 @@ _SNAPSHOT_SKIP = {
     "active_profile_id",
     "apply_update_on_next_launch",
     "dismissed_component_updates",
+    "dismissed_app_update_key",
     "notifications_enabled",
     "work_root",
     "zapret_block_quic",

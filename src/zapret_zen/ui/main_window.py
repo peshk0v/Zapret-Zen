@@ -11342,19 +11342,26 @@ class MainWindow(QMainWindow):
             return
 
         status = str(release.get("status", "error"))
-        latest_version = str(release.get("latest_version", ""))
-        prompt_key = latest_version
-        if bool(release.get("is_hotfix")):
-            prompt_key = f"{latest_version}:{release.get('release_updated_at', '')}"
+        prompt_key = self._update_prompt_key(release)
         if status == "up-to-date":
-            if self.context.settings.get().apply_update_on_next_launch:
-                self.context.settings.update(apply_update_on_next_launch=False)
+            settings = self.context.settings.get()
+            changes: dict[str, object] = {}
+            if settings.apply_update_on_next_launch:
+                changes["apply_update_on_next_launch"] = False
+            if settings.dismissed_app_update_key:
+                changes["dismissed_app_update_key"] = ""
+            if changes:
+                self.context.settings.update(**changes)
         if status == "available" and not manual and self.context.settings.get().apply_update_on_next_launch:
             self._last_prompted_update_version = prompt_key
             self._start_update_apply(None, release)
             return
         if status == "available":
-            if manual or self._last_prompted_update_version != prompt_key:
+            dismissed_key = self.context.settings.get().dismissed_app_update_key
+            should_prompt = manual or (
+                dismissed_key != prompt_key and self._last_prompted_update_version != prompt_key
+            )
+            if should_prompt:
                 self._last_prompted_update_version = prompt_key
                 self._show_update_prompt(release)
             return
@@ -11699,6 +11706,13 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self._toast_notification("error", self._t("Обновление", "Update"), str(exc))
 
+    @staticmethod
+    def _update_prompt_key(release: dict[str, object]) -> str:
+        latest_version = str(release.get("latest_version", ""))
+        if bool(release.get("is_hotfix")):
+            return f"{latest_version}:{release.get('release_updated_at', '')}"
+        return latest_version
+
     def _show_update_prompt(self, release: dict[str, str]) -> None:
         is_hotfix = bool(release.get("is_hotfix"))
         dialog = AppDialog(self, self.context, self._t("Hotfix available") if is_hotfix else self._t("Update available"))
@@ -11826,7 +11840,13 @@ class MainWindow(QMainWindow):
         row.addWidget(update_btn)
         dialog.body_layout.addLayout(row)
         dialog.prepare_and_center()
-        dialog.exec()
+        prompt_key = self._update_prompt_key(release)
+        result = dialog.exec()
+        if result != QDialog.DialogCode.Accepted:
+            settings = self.context.settings.get()
+            if settings.dismissed_app_update_key != prompt_key:
+                settings.dismissed_app_update_key = prompt_key
+                self.context.settings.save()
 
     def _open_update_link(self, url: str) -> None:
         if not url:
