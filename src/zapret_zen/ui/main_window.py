@@ -4538,8 +4538,7 @@ class MainWindow(QMainWindow):
         self._nav_items = [
             NavItem("home", "home.svg", self._t("Dashboard")),
             NavItem("services", "services.svg", self._t("Services")),
-            NavItem("mods", "mods.svg", self._t("Mods")),
-            NavItem("components", "components.svg", self._t("Components")),
+            NavItem("mods", "components.svg", self._t("Mods")),
             NavItem("settings", "settings.svg", self._t("Settings")),
         ]
 
@@ -5098,7 +5097,7 @@ class MainWindow(QMainWindow):
             elif hasattr(self, "pages") and self.pages.currentIndex() == 2:
                 self._sync_mod_card_layout()
             elif hasattr(self, "pages") and self.pages.currentIndex() == 3:
-                self._sync_component_card_layout()
+                self._sync_settings_components_if_visible()
 
         QTimer.singleShot(0, _sync)
         QTimer.singleShot(120, _sync)
@@ -5113,7 +5112,7 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(250, _refresh_current)
                 return
             current_index = self.pages.currentIndex() if hasattr(self, "pages") else 0
-            section_map = {0: "dashboard", 1: "services", 2: "mods", 3: "components", 4: "settings"}
+            section_map = {0: "dashboard", 1: "services", 2: "mods", 3: "settings"}
             current = section_map.get(current_index, "dashboard")
             self._mark_dirty(current, "tray")
 
@@ -5313,7 +5312,7 @@ class MainWindow(QMainWindow):
         elif hasattr(self, "pages") and self.pages.currentIndex() == 2:
             QTimer.singleShot(0, self._sync_mod_card_layout)
         elif hasattr(self, "pages") and self.pages.currentIndex() == 3:
-            QTimer.singleShot(0, lambda: self._sync_component_card_layout())
+            QTimer.singleShot(0, self._sync_settings_components_if_visible)
         if self._file_mode_stack is not None:
             if self._file_mode_stack.currentIndex() == 0:
                 QTimer.singleShot(0, self._sync_files_home_layout)
@@ -5653,8 +5652,6 @@ class MainWindow(QMainWindow):
             icon_size = 26
             if item.key in {"services", "mods"}:
                 icon_size = 28
-            elif item.key == "components":
-                icon_size = 24
             btn.setIconSize(QSize(icon_size, icon_size))
             btn.setToolTip(item.tooltip)
             btn.clicked.connect(lambda _=False, index=idx: self._switch_page(index))
@@ -5718,7 +5715,6 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self._build_dashboard_page())
         self.pages.addWidget(self._build_services_page())
         self.pages.addWidget(self._build_mods_page())
-        self.pages.addWidget(self._build_components_page())
         self.pages.addWidget(self._build_settings_page())
         self._page_blur_effect = None
         pages_host_layout.addWidget(self.pages)
@@ -7392,174 +7388,195 @@ class MainWindow(QMainWindow):
         self._refresh_settings_profiles_list()
         self._update_profile_carousel()
 
-    def _build_zapret_settings_page(self) -> tuple[QWidget, dict]:
-        page = QWidget()
-        scroll = QScrollArea()
-        scroll.setObjectName("SettingsScroll")
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        canvas = QWidget()
-        canvas.setObjectName("SettingsCanvas")
-        layout = QVBoxLayout(canvas)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(16)
-        scroll.setWidget(canvas)
-        root = QVBoxLayout(page)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-        root.addWidget(scroll, 1)
+    def _settings_segment(self, items: list[tuple[str, str]], current: str, key: str, ctrl: dict) -> QWidget:
+        seg = QWidget()
+        seg.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+        row = QHBoxLayout(seg)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+        group = QButtonGroup(seg)
+        for i, (label, value) in enumerate(items):
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setFixedHeight(30)
+            btn.setProperty("class", "settingsSegment")
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setChecked(value == current)
+            btn._seg_value = value
+            group.addButton(btn, i)
+            row.addWidget(btn)
+        group.setExclusive(True)
+        ctrl[key] = group
+        return seg
 
-        ctrl: dict = {}
+    def _settings_section_label(self, text: str) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setProperty("class", "title")
+        return lbl
 
-        def _segment(items, current, key):
-            seg = QWidget()
-            seg.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
-            row = QHBoxLayout(seg)
-            row.setContentsMargins(0, 0, 0, 0)
-            row.setSpacing(6)
-            group = QButtonGroup(seg)
-            for i, (label, value) in enumerate(items):
-                btn = QPushButton(label)
-                btn.setCheckable(True)
-                btn.setFixedHeight(30)
-                btn.setProperty("class", "settingsSegment")
-                btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                btn.setChecked(value == current)
-                btn._seg_value = value
-                group.addButton(btn, i)
-                row.addWidget(btn)
-            group.setExclusive(True)
-            ctrl[key] = group
-            return seg, group
+    def _current_settings_value(self, ctrl: dict, key: str, fallback: object) -> object:
+        existing = ctrl.get(key)
+        if isinstance(existing, QButtonGroup):
+            for btn in existing.buttons():
+                if btn.isChecked() and hasattr(btn, "_seg_value"):
+                    return str(btn._seg_value)
+            return fallback
+        if isinstance(existing, QCheckBox):
+            return existing.isChecked()
+        if isinstance(existing, QLineEdit):
+            return existing.text()
+        if isinstance(existing, QTextEdit):
+            return existing.toPlainText()
+        if isinstance(existing, QComboBox):
+            return existing.currentData()
+        return fallback
 
-        def _section(title):
-            frame = QFrame()
-            frame.setProperty("class", "settingsSection")
-            fl = QVBoxLayout(frame)
-            fl.setContentsMargins(16, 14, 16, 14)
-            fl.setSpacing(10)
-            lbl = QLabel(title)
-            lbl.setProperty("class", "title")
-            fl.addWidget(lbl)
-            layout.addWidget(frame)
-            return fl
+    def _wire_component_settings_widgets(self, *widgets: object) -> None:
+        for widget in widgets:
+            if isinstance(widget, (QLineEdit, QTextEdit)):
+                widget.textChanged.connect(self._schedule_settings_save)
+            elif isinstance(widget, QCheckBox):
+                widget.stateChanged.connect(self._schedule_settings_save)
+            elif isinstance(widget, QButtonGroup):
+                widget.buttonClicked.connect(lambda _btn=None: self._schedule_settings_save())
+            elif isinstance(widget, QComboBox):
+                widget.currentIndexChanged.connect(self._schedule_settings_save)
 
+    def _schedule_settings_save(self) -> None:
+        timer = getattr(self, "_components_settings_save_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(300)
+            timer.timeout.connect(self._flush_settings_save_from_components)
+            self._components_settings_save_timer = timer
+        timer.start()
+
+    def _flush_settings_save_from_components(self) -> None:
+        page = self.pages.widget(3) if self.pages.count() > 3 else None
+        if page is None:
+            return
+        try:
+            self._save_settings_page(page)
+        except Exception as error:
+            self.context.logging.log("error", "settings_save_failed", error=str(error))
+
+    def _components_settings_ctrl(self) -> dict | None:
+        if not hasattr(self, "pages"):
+            return None
+        page = self.pages.widget(3) if self.pages.count() > 3 else None
+        if page is None:
+            return None
+        ctrl = getattr(page, "_settings_ctrl", None)
+        return ctrl if isinstance(ctrl, dict) else None
+
+    def _build_zapret_card_settings(self, layout: QVBoxLayout, ctrl: dict) -> None:
         settings = self.context.settings.get()
-
-        zapret_section = _section("Zapret")
-        ipset_items = [("loaded", "loaded"), ("none", "none"), ("any", "any")]
-        zapret_section.addWidget(QLabel("IPSet mode"))
-        ipset_w, _ = _segment(ipset_items, settings.zapret_ipset_mode, "ipset_mode")
-        zapret_section.addWidget(ipset_w)
+        layout.addWidget(self._settings_section_label(self._t("Настройки Zapret", "Zapret settings")))
+        ipset_current = self._current_settings_value(ctrl, "ipset_mode", settings.zapret_ipset_mode)
+        layout.addWidget(QLabel("IPSet mode"))
+        layout.addWidget(
+            self._settings_segment(
+                [("loaded", "loaded"), ("none", "none"), ("any", "any")],
+                ipset_current,
+                "ipset_mode",
+                ctrl,
+            )
+        )
         game_items = [
             (self._t("disabled"), "disabled"),
             (self._t("tcp + udp"), "tcpudp"),
             (self._t("tcp only"), "tcp"),
             (self._t("udp only"), "udp"),
         ]
-        zapret_section.addWidget(QLabel(self._t("Gaming mode")))
-        game_w, _ = _segment(game_items, settings.zapret_game_filter_mode, "gaming_mode")
-        zapret_section.addWidget(game_w)
+        layout.addWidget(QLabel(self._t("Gaming mode")))
+        layout.addWidget(
+            self._settings_segment(
+                game_items,
+                self._current_settings_value(ctrl, "gaming_mode", settings.zapret_game_filter_mode),
+                "gaming_mode",
+                ctrl,
+            )
+        )
         udp_excl = QLineEdit()
-        udp_excl.setText(settings.zapret_udp_exclude_ports or "")
+        udp_excl.setText(str(self._current_settings_value(ctrl, "udp_exclude", settings.zapret_udp_exclude_ports or "") or ""))
         ctrl["udp_exclude"] = udp_excl
-        zapret_section.addWidget(QLabel(self._t("Exclude UDP ports")))
-        zapret_section.addWidget(udp_excl)
+        layout.addWidget(QLabel(self._t("Exclude UDP ports")))
+        layout.addWidget(udp_excl)
         quic_cb = QCheckBox(self._t("Block QUIC (UDP 443)"))
-        quic_cb.setChecked(settings.zapret_block_quic)
+        quic_cb.setChecked(bool(self._current_settings_value(ctrl, "block_quic", settings.zapret_block_quic)))
         ctrl["block_quic"] = quic_cb
-        zapret_section.addWidget(quic_cb)
+        layout.addWidget(quic_cb)
+        self._wire_component_settings_widgets(ctrl["ipset_mode"], ctrl["gaming_mode"], udp_excl, quic_cb)
 
-        layout.addStretch(1)
-        return page, ctrl
-
-    def _build_tg_settings_page(self) -> tuple[QWidget, dict]:
-        page = QWidget()
-        scroll = QScrollArea()
-        scroll.setObjectName("SettingsScroll")
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        canvas = QWidget()
-        canvas.setObjectName("SettingsCanvas")
-        layout = QVBoxLayout(canvas)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(16)
-        scroll.setWidget(canvas)
-        root = QVBoxLayout(page)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-        root.addWidget(scroll, 1)
-
-        ctrl: dict = {}
-
-        def _segment(items, current, key):
-            seg = QWidget()
-            seg.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
-            row = QHBoxLayout(seg)
-            row.setContentsMargins(0, 0, 0, 0)
-            row.setSpacing(6)
-            group = QButtonGroup(seg)
-            for i, (label, value) in enumerate(items):
-                btn = QPushButton(label)
-                btn.setCheckable(True)
-                btn.setFixedHeight(30)
-                btn.setProperty("class", "settingsSegment")
-                btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                btn.setChecked(value == current)
-                btn._seg_value = value
-                group.addButton(btn, i)
-                row.addWidget(btn)
-            group.setExclusive(True)
-            ctrl[key] = group
-            return seg, group
-
-        def _section(title):
-            frame = QFrame()
-            frame.setProperty("class", "settingsSection")
-            frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-            fl = QVBoxLayout(frame)
-            fl.setContentsMargins(16, 14, 16, 14)
-            fl.setSpacing(10)
-            lbl = QLabel(title)
-            lbl.setProperty("class", "title")
-            fl.addWidget(lbl)
-            layout.addWidget(frame)
-            return fl
-
+    def _build_tg_card_settings(self, layout: QVBoxLayout, ctrl: dict) -> None:
         settings = self.context.settings.get()
-
-        tg_section = _section("TG WS Proxy")
+        layout.addWidget(self._settings_section_label(self._t("Настройки TG WS Proxy", "TG WS Proxy settings")))
         tg_host = QLineEdit()
-        tg_host.setText(settings.tg_proxy_host or "")
+        tg_host.setText(str(self._current_settings_value(ctrl, "tg_host", settings.tg_proxy_host or "") or ""))
         ctrl["tg_host"] = tg_host
-        tg_section.addWidget(QLabel(self._t("Host")))
-        tg_section.addWidget(tg_host)
+        layout.addWidget(QLabel(self._t("Host")))
+        layout.addWidget(tg_host)
         tg_port = QLineEdit()
-        tg_port.setText(str(settings.tg_proxy_port or ""))
+        tg_port.setText(str(self._current_settings_value(ctrl, "tg_port", settings.tg_proxy_port or "") or ""))
         ctrl["tg_port"] = tg_port
-        tg_section.addWidget(QLabel(self._t("Port")))
-        tg_section.addWidget(tg_port)
+        layout.addWidget(QLabel(self._t("Port")))
+        layout.addWidget(tg_port)
         tg_secret = QLineEdit()
-        tg_secret.setText(settings.tg_proxy_secret or "")
+        tg_secret.setText(str(self._current_settings_value(ctrl, "tg_secret", settings.tg_proxy_secret or "") or ""))
         ctrl["tg_secret"] = tg_secret
-        tg_section.addWidget(QLabel(self._t("Secret")))
-        tg_section.addWidget(tg_secret)
+        layout.addWidget(QLabel(self._t("Secret")))
+        layout.addWidget(tg_secret)
         tg_media_items = [
             (self._t("Default"), "default"),
             ("Media fix", "media_fix"),
             (self._t("No DC override"), "empty"),
         ]
-        tg_section.addWidget(QLabel(self._t("Media mode")))
-        media_w, media_grp = _segment(tg_media_items, settings.tg_proxy_media_mode, "tg_media_mode")
-        tg_section.addWidget(media_w)
+        layout.addWidget(QLabel(self._t("Media mode")))
+        layout.addWidget(
+            self._settings_segment(
+                tg_media_items,
+                self._current_settings_value(ctrl, "tg_media_mode", settings.tg_proxy_media_mode),
+                "tg_media_mode",
+                ctrl,
+            )
+        )
         tg_dc = QTextEdit()
         tg_dc.setFixedHeight(72)
-        tg_dc.setText(settings.tg_proxy_dc_ip or "")
+        tg_dc.setText(str(self._current_settings_value(ctrl, "tg_dc", settings.tg_proxy_dc_ip or "") or ""))
         ctrl["tg_dc"] = tg_dc
+        layout.addWidget(QLabel("DC -> IP"))
+        layout.addWidget(tg_dc)
+        tg_cf_cb = QCheckBox(self._t("Cloudflare fallback"))
+        tg_cf_cb.setChecked(bool(self._current_settings_value(ctrl, "tg_cfproxy", settings.tg_proxy_cfproxy_enabled)))
+        ctrl["tg_cfproxy"] = tg_cf_cb
+        layout.addWidget(tg_cf_cb)
+        tg_cf_prio_cb = QCheckBox(self._t("Try Cloudflare first"))
+        tg_cf_prio_cb.setChecked(bool(self._current_settings_value(ctrl, "tg_cfproxy_priority", settings.tg_proxy_cfproxy_priority)))
+        ctrl["tg_cfproxy_priority"] = tg_cf_prio_cb
+        layout.addWidget(tg_cf_prio_cb)
+        tg_cf_domain = QLineEdit()
+        tg_cf_domain.setText(str(self._current_settings_value(ctrl, "tg_cf_domain", settings.tg_proxy_cfproxy_domain or "") or ""))
+        ctrl["tg_cf_domain"] = tg_cf_domain
+        layout.addWidget(QLabel(self._t("CF domain")))
+        layout.addWidget(tg_cf_domain)
+        tg_fake_tls = QLineEdit()
+        tg_fake_tls.setText(str(self._current_settings_value(ctrl, "tg_fake_tls", settings.tg_proxy_fake_tls_domain or "") or ""))
+        ctrl["tg_fake_tls"] = tg_fake_tls
+        layout.addWidget(QLabel(self._t("Fake TLS domain")))
+        layout.addWidget(tg_fake_tls)
+        tg_buf = QLineEdit()
+        tg_buf.setText(str(self._current_settings_value(ctrl, "tg_buf", settings.tg_proxy_buf_kb or "") or ""))
+        ctrl["tg_buf"] = tg_buf
+        layout.addWidget(QLabel(self._t("Buffer, KB")))
+        layout.addWidget(tg_buf)
+        tg_pool = QLineEdit()
+        tg_pool.setText(str(self._current_settings_value(ctrl, "tg_pool", settings.tg_proxy_pool_size or "") or ""))
+        ctrl["tg_pool"] = tg_pool
+        layout.addWidget(QLabel("Pool size"))
+        layout.addWidget(tg_pool)
+
+        media_grp = ctrl["tg_media_mode"]
 
         def _apply_tg_media_preset(btn_id: int) -> None:
             btn = media_grp.button(btn_id)
@@ -7574,36 +7591,6 @@ class MainWindow(QMainWindow):
                 tg_dc.setPlainText("2:149.154.167.51\n4:149.154.167.91")
 
         media_grp.idClicked.connect(_apply_tg_media_preset)
-        tg_section.addWidget(QLabel("DC -> IP"))
-        tg_section.addWidget(tg_dc)
-        tg_cf_cb = QCheckBox(self._t("Cloudflare fallback"))
-        tg_cf_cb.setChecked(settings.tg_proxy_cfproxy_enabled)
-        ctrl["tg_cfproxy"] = tg_cf_cb
-        tg_section.addWidget(tg_cf_cb)
-        tg_cf_prio_cb = QCheckBox(self._t("Try Cloudflare first"))
-        tg_cf_prio_cb.setChecked(settings.tg_proxy_cfproxy_priority)
-        ctrl["tg_cfproxy_priority"] = tg_cf_prio_cb
-        tg_section.addWidget(tg_cf_prio_cb)
-        tg_cf_domain = QLineEdit()
-        tg_cf_domain.setText(settings.tg_proxy_cfproxy_domain or "")
-        ctrl["tg_cf_domain"] = tg_cf_domain
-        tg_section.addWidget(QLabel(self._t("CF domain")))
-        tg_section.addWidget(tg_cf_domain)
-        tg_fake_tls = QLineEdit()
-        tg_fake_tls.setText(settings.tg_proxy_fake_tls_domain or "")
-        ctrl["tg_fake_tls"] = tg_fake_tls
-        tg_section.addWidget(QLabel(self._t("Fake TLS domain")))
-        tg_section.addWidget(tg_fake_tls)
-        tg_buf = QLineEdit()
-        tg_buf.setText(str(settings.tg_proxy_buf_kb or ""))
-        ctrl["tg_buf"] = tg_buf
-        tg_section.addWidget(QLabel(self._t("Buffer, KB")))
-        tg_section.addWidget(tg_buf)
-        tg_pool = QLineEdit()
-        tg_pool.setText(str(settings.tg_proxy_pool_size or ""))
-        ctrl["tg_pool"] = tg_pool
-        tg_section.addWidget(QLabel("Pool size"))
-        tg_section.addWidget(tg_pool)
 
         tune_row = QWidget()
         tune_row.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
@@ -7622,10 +7609,21 @@ class MainWindow(QMainWindow):
         tune_full_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         tune_full_btn.clicked.connect(lambda: self._start_tg_proxy_tuning_from_settings("full"))
         tune_layout.addWidget(tune_full_btn, 1)
-        tg_section.addWidget(tune_row)
-        tg_section.addStretch(1)
+        layout.addWidget(tune_row)
 
-        return page, ctrl
+        self._wire_component_settings_widgets(
+            ctrl["tg_media_mode"],
+            tg_host,
+            tg_port,
+            tg_secret,
+            tg_dc,
+            tg_cf_cb,
+            tg_cf_prio_cb,
+            tg_cf_domain,
+            tg_fake_tls,
+            tg_buf,
+            tg_pool,
+        )
 
     def _build_files_settings_page(self) -> tuple[QWidget, dict]:
         return self._build_files_page(), {}
@@ -7758,12 +7756,11 @@ class MainWindow(QMainWindow):
         settings = self.context.settings.get()
         accent_color = QColor(getattr(settings, 'accent_color', '#7380ff'))
         tab_bar = _SettingsTabBar([
-            self._t("Application"),
-            "Zapret",
-            "TG WS Proxy",
+            "Application",
             self._t("Files"),
             self._t("Logs"),
             self._t("Tools"),
+            self._t("Компоненты", "Components"),
         ], light_theme=self._light_theme, accent_color=accent_color)
         tab_bar.setObjectName("SettingsTabBar")
         root.addWidget(tab_bar)
@@ -7778,11 +7775,10 @@ class MainWindow(QMainWindow):
 
         builders = [
             self._build_app_settings_page,
-            self._build_zapret_settings_page,
-            self._build_tg_settings_page,
             self._build_files_settings_page,
             self._build_logs_settings_page,
             self._build_tools_settings_page,
+            self._build_components_settings_page,
         ]
         for builder in builders:
             sub_page, sub_ctrl = builder()
@@ -7790,8 +7786,14 @@ class MainWindow(QMainWindow):
             self._settings_stack.addWidget(sub_page)
 
         page._settings_ctrl = all_ctrl
+        self._components_settings_index = self._settings_stack.count() - 1
 
-        tab_bar.tab_changed.connect(self._settings_stack.setCurrentIndex)
+        def _on_settings_tab_changed(index: int) -> None:
+            self._settings_stack.setCurrentIndex(index)
+            if index == self._components_settings_index:
+                self._refresh_components_for_settings()
+
+        tab_bar.tab_changed.connect(_on_settings_tab_changed)
 
         # --- Auto-save connections ---
 
@@ -7906,8 +7908,48 @@ class MainWindow(QMainWindow):
 
         return page
 
+    def _build_components_settings_page(self) -> tuple[QWidget, dict]:
+        return self._build_components_page(), {}
+
+    def _showing_components_settings_tab(self) -> bool:
+        stack = getattr(self, "_settings_stack", None)
+        if stack is None:
+            return False
+        return stack.currentIndex() == int(getattr(self, "_components_settings_index", -1))
+
+    def _refresh_components_for_settings(self) -> None:
+        try:
+            cached = self._page_payload_cache.get("components")
+            if isinstance(cached, dict):
+                self.refresh_components(cached)
+            else:
+                self.refresh_components(self._build_components_cached_payload())
+        except Exception as error:
+            self.context.logging.log("error", "components_settings_prewarm_failed", error=str(error))
+            try:
+                self.refresh_components({"components": [], "states": []})
+            except Exception:
+                pass
+        self._sync_component_card_layout()
+        QTimer.singleShot(0, self._sync_component_card_layout)
+        try:
+            self._request_page_refresh("components")
+        except Exception as error:
+            self.context.logging.log("error", "components_settings_refresh_failed", error=str(error))
+
+    def _sync_settings_components_if_visible(self) -> None:
+        if not self._showing_components_settings_tab():
+            return
+        if hasattr(self, "pages") and self.pages.currentIndex() == 3:
+            self._sync_component_card_layout()
+            QTimer.singleShot(0, self._sync_component_card_layout)
+            try:
+                self._request_page_refresh("components")
+            except Exception:
+                pass
+
     def _reload_settings_page(self) -> None:
-        page = self.pages.widget(4) if self.pages.count() > 4 else None
+        page = self.pages.widget(3) if self.pages.count() > 3 else None
         if page is None:
             return
         ctrl = getattr(page, "_settings_ctrl", {})
@@ -8000,6 +8042,25 @@ class MainWindow(QMainWindow):
         if isinstance(inp, QLineEdit):
             inp.setText(str(settings.tg_proxy_pool_size or ""))
 
+        combo = ctrl.get("dns_preset")
+        if isinstance(combo, QComboBox):
+            combo.blockSignals(True)
+            for i in range(combo.count()):
+                if str(combo.itemData(i) or "") == settings.selected_dns_preset:
+                    combo.setCurrentIndex(i)
+                    break
+            combo.blockSignals(False)
+        cb = ctrl.get("dns_custom")
+        if isinstance(cb, QCheckBox):
+            cb.blockSignals(True)
+            cb.setChecked(settings.dns_custom_server)
+            cb.blockSignals(False)
+        inp = ctrl.get("dns_custom_doh")
+        if isinstance(inp, QLineEdit):
+            inp.blockSignals(True)
+            inp.setText(settings.dns_custom_doh or "")
+            inp.blockSignals(False)
+
         for btn in page.findChildren(QPushButton):
             if btn.property("class") == "settingsSegment":
                 btn.style().unpolish(btn)
@@ -8089,6 +8150,16 @@ class MainWindow(QMainWindow):
         val = _read_seg("tg_media_mode")
         if val:
             payload["tg_proxy_media_mode"] = val
+
+        combo = ctrl.get("dns_preset")
+        if isinstance(combo, QComboBox):
+            payload["selected_dns_preset"] = str(combo.currentData() or "")
+        cb = ctrl.get("dns_custom")
+        if isinstance(cb, QCheckBox):
+            payload["dns_custom_server"] = cb.isChecked()
+        inp = ctrl.get("dns_custom_doh")
+        if isinstance(inp, QLineEdit):
+            payload["dns_custom_doh"] = inp.text()
 
         cb = ctrl.get("discord_rpc")
         if isinstance(cb, QCheckBox):
@@ -8507,25 +8578,6 @@ class MainWindow(QMainWindow):
                 self.refresh_dashboard()
                 self._sync_power_aura_geometry()
             elif index == 3:
-                try:
-                    cached = self._page_payload_cache.get("components")
-                    if isinstance(cached, dict):
-                        self.refresh_components(cached)
-                    else:
-                        self.refresh_components(self._build_components_cached_payload())
-                except Exception as error:
-                    self.context.logging.log("error", "components_prewarm_failed", error=str(error))
-                    try:
-                        self.refresh_components({"components": [], "states": []})
-                    except Exception:
-                        pass
-                self._sync_component_card_layout()
-                QTimer.singleShot(0, self._sync_component_card_layout)
-                try:
-                    self._request_page_refresh("components")
-                except Exception as error:
-                    self.context.logging.log("error", "components_refresh_request_failed", error=str(error))
-            elif index == 4:
                 self._reload_settings_page()
                 self.refresh_dashboard()
             self._animate_glow_for_page(index)
@@ -8544,7 +8596,6 @@ class MainWindow(QMainWindow):
                 0: "dashboard",
                 1: "services",
                 2: "mods",
-                3: "components",
             }
             section = section_map.get(index)
             if section:
@@ -8564,8 +8615,7 @@ class MainWindow(QMainWindow):
         0: (0.50, 0.50),
         1: (0.80, 0.15),
         2: (0.15, 0.80),
-        3: (0.80, 0.80),
-        4: (0.50, 0.85),
+        3: (0.50, 0.85),
     }
 
     def _animate_glow_for_page(self, index: int) -> None:
@@ -8641,7 +8691,7 @@ class MainWindow(QMainWindow):
             elif self.pages.currentIndex() == 2:
                 self._sync_mod_card_layout()
             elif self.pages.currentIndex() == 3:
-                self._sync_component_card_layout()
+                self._sync_settings_components_if_visible()
             self._page_transition_running = False
             self._page_transition_started_at = 0.0
             self._page_transition_target = self.pages.currentIndex()
@@ -8786,14 +8836,14 @@ class MainWindow(QMainWindow):
     def _rebuild_settings_page(self) -> None:
         if not hasattr(self, "pages"):
             return
-        old = self.pages.widget(4)
+        old = self.pages.widget(3)
         if old is None:
             return
         was_current = self.pages.currentWidget() is old
         self.pages.removeWidget(old)
         old.deleteLater()
         new_page = self._build_settings_page()
-        self.pages.insertWidget(4, new_page)
+        self.pages.insertWidget(3, new_page)
         if was_current:
             self.pages.setCurrentWidget(new_page)
             self._sync_nav_highlight(animated=True)
@@ -8807,11 +8857,11 @@ class MainWindow(QMainWindow):
         elif current_index == 1:
             self.refresh_services()
         elif current_index == 2:
-            self.refresh_components()
-        elif current_index == 3:
             self.refresh_mods()
-        elif current_index == 4:
+            self._sync_mod_card_layout()
+        elif current_index == 3:
             self._reload_settings_page()
+            self._sync_settings_components_if_visible()
 
     def _restore_optimistic_settings_if_needed(self) -> None:
         if self._pending_settings_payload is None:
@@ -9108,7 +9158,7 @@ class MainWindow(QMainWindow):
         if action == "load_components_payload":
             if isinstance(payload, dict):
                 self._page_payload_cache["components"] = payload
-                if self.pages.currentIndex() == 3:
+                if self.pages.currentIndex() == 3 and self._showing_components_settings_tab():
                     self.refresh_components(payload)
             return
         if action == "write_file_text":
@@ -9839,10 +9889,8 @@ class MainWindow(QMainWindow):
         nav_tooltips = [
             self._t("Dashboard"),
             self._t("Services"),
-            self._t("Components"),
             self._t("Mods"),
-            self._t("Files"),
-            self._t("Logs"),
+            self._t("Settings"),
         ]
         for index, btn in enumerate(self._nav_buttons):
             if index < len(nav_tooltips):
@@ -12999,12 +13047,6 @@ class MainWindow(QMainWindow):
         self._advance_component_loading()
         self._submit_backend_task("select_general", {"selected": selected}, action_id="__general__")
 
-    def _on_dns_preset_selected(self, preset: str) -> None:
-        current = self.context.settings.get().selected_dns_preset
-        if preset == current:
-            return
-        self._submit_backend_task("apply_dns_preset", {"preset": preset})
-
     def _apply_general_selection_worker(self, selected: str) -> None:
         self.context.settings.get().selected_zapret_general = selected
         self.context.settings.save()
@@ -14696,6 +14738,7 @@ class MainWindow(QMainWindow):
         }
         icons = {"zapret": "component_zapret.svg", "dns-manager": "component_dns.svg", "tg-ws-proxy": "component_tg.svg"}
         component_cards: list[QFrame] = []
+        settings_ctrl: dict = self._components_settings_ctrl() or {}
 
         for index, component in enumerate(components):
             state = states.get(component.id)
@@ -14703,7 +14746,7 @@ class MainWindow(QMainWindow):
             display_name = {"zapret": "Zapret", "dns-manager": "DNS Manager", "tg-ws-proxy": "Tg-Ws-Proxy"}.get(component.id, component.name)
             card, card_layout = self._card()
             card.setMinimumWidth(360)
-            card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+            card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
             self._components_card_by_id[component.id] = card
             title = QLabel(display_name)
             title.setWordWrap(True)
@@ -14791,6 +14834,7 @@ class MainWindow(QMainWindow):
                 config_row.addWidget(favorite_btn, 0)
                 card_layout.addLayout(config_row)
                 card_layout.addWidget(config_status)
+                self._build_zapret_card_settings(card_layout, settings_ctrl)
 
             if component.id == "tg-ws-proxy":
                 telegram_link = QLabel()
@@ -14809,8 +14853,13 @@ class MainWindow(QMainWindow):
                 connect_btn.clicked.connect(self._prompt_tg_proxy_connect)
                 self._attach_button_animations(connect_btn)
                 card_layout.addWidget(connect_btn)
+                self._build_tg_card_settings(card_layout, settings_ctrl)
 
             if component.id == "dns-manager":
+                settings_dns = self.context.settings.get()
+                section_heading = QLabel(self._t("Настройки DNS Manager", "DNS Manager settings"))
+                section_heading.setProperty("class", "title")
+                card_layout.addWidget(section_heading)
                 dns_presets = self._dns_presets_cache
                 config_label = QLabel(self._t("DNS Server"))
                 config_label.setProperty("class", "muted")
@@ -14821,29 +14870,71 @@ class MainWindow(QMainWindow):
                     config_status = QLabel("")
                     config_status.setProperty("class", "muted")
                     config_status.hide()
-                    selected = self.context.settings.get().selected_dns_preset
+                    selected = str(
+                        self._current_settings_value(
+                            settings_ctrl, "dns_preset", getattr(settings_dns, "selected_dns_preset", "") or ""
+                        )
+                        or ""
+                    )
                     first_id = ""
                     for preset in dns_presets:
                         name = str(preset.get("name", preset.get("id", "")))
                         pid = str(preset.get("id", ""))
-                        dns_combo.addItem(name, pid)
+                        doh = str(preset.get("doh", "") or "")
+                        label = f"{name} — {doh}" if doh else name
+                        dns_combo.addItem(label, pid)
                         if not first_id:
                             first_id = pid
                     if not selected:
                         selected = first_id
-                        if first_id:
-                            self._on_dns_preset_selected(first_id)
                     picked_index = 0
                     for i in range(dns_combo.count()):
                         if dns_combo.itemData(i) == selected:
                             picked_index = i
                             break
                     dns_combo.setCurrentIndex(picked_index)
-                    dns_combo.currentIndexChanged.connect(
-                        lambda _=0, combo=dns_combo: self._on_dns_preset_selected(str(combo.currentData() or ""))
-                    )
                     card_layout.addWidget(dns_combo)
                     card_layout.addWidget(config_status)
+                    custom_dns_cb = QCheckBox(self._t("Свой DNS-сервер", "Custom server"))
+                    custom_dns_cb.setChecked(
+                        bool(
+                            self._current_settings_value(
+                                settings_ctrl,
+                                "dns_custom",
+                                bool(getattr(settings_dns, "dns_custom_server", False)),
+                            )
+                        )
+                    )
+                    custom_doh_label = QLabel(self._t("Адрес DNS-over-HTTPS", "DNS-over-HTTPS address"))
+                    custom_doh_label.setProperty("class", "muted")
+                    custom_doh_label.setContentsMargins(0, 6, 0, 0)
+                    custom_doh_input = QLineEdit()
+                    custom_doh_input.setPlaceholderText("https://…/dns-query")
+                    custom_doh_input.setText(
+                        str(
+                            self._current_settings_value(
+                                settings_ctrl,
+                                "dns_custom_doh",
+                                getattr(settings_dns, "dns_custom_doh", "") or "",
+                            )
+                            or ""
+                        )
+                    )
+                    def _sync_dns_custom_ui() -> None:
+                        custom_on = custom_dns_cb.isChecked()
+                        dns_combo.setEnabled(not custom_on)
+                        custom_doh_label.setVisible(custom_on)
+                        custom_doh_input.setVisible(custom_on)
+
+                    custom_dns_cb.stateChanged.connect(lambda _=0: _sync_dns_custom_ui())
+                    _sync_dns_custom_ui()
+                    card_layout.addWidget(custom_dns_cb)
+                    card_layout.addWidget(custom_doh_label)
+                    card_layout.addWidget(custom_doh_input)
+                    settings_ctrl["dns_preset"] = dns_combo
+                    settings_ctrl["dns_custom"] = custom_dns_cb
+                    settings_ctrl["dns_custom_doh"] = custom_doh_input
+                    self._wire_component_settings_widgets(dns_combo, custom_dns_cb, custom_doh_input)
 
             if state is not None and getattr(state, "last_error", ""):
                 error_label = QLabel(str(getattr(state, "last_error", "")))
@@ -15197,37 +15288,13 @@ class MainWindow(QMainWindow):
     def _sync_component_card_layout(self, cards: list[QFrame] | None = None) -> None:
         if self._components_cards_layout is None or self._components_scroll is None:
             return
-        resolved_cards = cards or [self._components_cards_layout.itemAt(i).widget() for i in range(self._components_cards_layout.count())]
-        widgets = [widget for widget in resolved_cards if isinstance(widget, QFrame)]
-        if not widgets:
-            return
-        viewport = self._components_scroll.viewport()
-        if viewport.height() <= 0:
-            QTimer.singleShot(0, self._sync_component_card_layout)
-            return
-        content_height = 0
-        for widget in widgets:
-            widget.setMinimumHeight(0)
-            widget.setMaximumHeight(16777215)
-            widget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
-            try:
-                if widget.layout() is not None:
-                    widget.layout().activate()
-            except Exception:
-                pass
-            widget.adjustSize()
-            content_height = max(
-                content_height,
-                widget.minimumSizeHint().height(),
-                widget.sizeHint().height(),
-            )
-        margins = self._components_cards_layout.contentsMargins()
-        available = viewport.height() - margins.top() - margins.bottom()
-        target_height = max(content_height, available)
-        for widget in widgets:
-            widget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-            widget.setFixedHeight(target_height)
+        try:
+            self._components_cards_layout.activate()
+        except Exception:
+            pass
         self._components_cards_root.updateGeometry()
+        if self._components_scroll.viewport() is not None:
+            self._components_scroll.viewport().update()
 
     def _sync_mod_card_layout(self) -> None:
         if self.mods_scroll is None or self.mods_canvas is None or self.mods_cards_layout is None:

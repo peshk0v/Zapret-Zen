@@ -58,6 +58,8 @@ class AppSettings:
     zapret_udp_exclude_ports: str = "51820"
     zapret_block_quic: bool = False
     selected_dns_preset: str = ""
+    dns_custom_server: bool = False
+    dns_custom_doh: str = ""
     apply_update_on_next_launch: bool = False
     dismissed_app_update_key: str = ""
     dismissed_component_updates: dict[str, str] = field(default_factory=dict)

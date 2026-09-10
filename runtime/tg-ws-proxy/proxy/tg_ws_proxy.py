@@ -33,10 +33,14 @@ from ._aes import Cipher, algorithms, modes
 
 log = logging.getLogger('tg-mtproto-proxy')
 
-DC_FAIL_COOLDOWN = 30.0
+IP_FAIL_COOLDOWN = 3600.0
+DC_FAIL_COOLDOWN = 60.0
 WS_FAIL_TIMEOUT = 2.0
+LISTENER_CHECK_INTERVAL = 5.0
+LISTENER_RESTART_DELAY = 1.0
 ws_blacklist: Set[str] = set()
 dc_fail_until: Dict[str, float] = {}
+ip_fail_until: Dict[str, float] = {}
 
 
 def _try_handshake(handshake: bytes, secret: bytes) -> Optional[Tuple[int, bool, bytes, bytes]]:
@@ -272,6 +276,11 @@ async def _handle_client(reader, writer, secret: bytes):
 
         dc, is_media, proto_tag, client_dec_prekey_iv = result
 
+        is_test_dc = proxy_config.force_test_dc or dc >= 10000
+        if dc >= 10000:
+            log.info("[%s] test DC%d -> DC%d", label, dc, dc - 10000)
+            dc -= 10000
+
         if proto_tag == PROTO_TAG_ABRIDGED:
             proto_int = PROTO_ABRIDGED_INT
         elif proto_tag == PROTO_TAG_INTERMEDIATE:
@@ -287,53 +296,74 @@ async def _handle_client(reader, writer, secret: bytes):
         relay_init = _generate_relay_init(proto_tag, dc_idx)
         ctx = _build_crypto_ctx(client_dec_prekey_iv, secret, relay_init)
 
-        dc_key = f'{dc}{"m" if is_media else ""}'
+        dc_key = f'{dc}{"t" if is_test_dc else ""}{"m" if is_media else ""}'
         media_tag = " media" if is_media else ""
+        now = time.monotonic()
+        ws_path = WS_PATH_TEST if is_test_dc else WS_PATH
+        target = proxy_config.dc_redirects.get(dc)
+        is_any_cf_fallback = proxy_config.fallback_cfproxy or proxy_config.cfproxy_worker_domains
+        domains = ws_domains(dc, is_media)
+        ws = None
 
-        # Fallback if DC not in config or WS blacklisted for this DC/is_media
-        if dc not in proxy_config.dc_redirects or dc_key in ws_blacklist:
+        # Fallback if DC not in config, if WS blacklisted for this DC/is_media or if connect to ip is timed out
+        if (dc not in proxy_config.dc_redirects
+            or dc_key in ws_blacklist
+            or now < ip_fail_until.get(target, 0) and is_any_cf_fallback):
+
             if dc not in proxy_config.dc_redirects:
                 log.info("[%s] DC%d not in config -> fallback",
                          label, dc)
-            else:
+            elif dc_key in ws_blacklist:
                 log.info("[%s] DC%d%s WS blacklisted -> fallback",
                          label, dc, media_tag)
-            splitter = None
-            try:
-                splitter = MsgSplitter(relay_init, proto_int)
-            except Exception:
-                pass
-            ok = await do_fallback(
-                clt_reader, clt_writer, relay_init, label,
-                dc, is_media, media_tag,
-                ctx, splitter=splitter)
-            if not ok:
-                log.warning("[%s] DC%d%s no fallback available",
-                            label, dc, media_tag)
-            return
+            else:
+                # Try to get WS from pool first, might be accidental timeout
+                ws = await ws_pool.get(
+                    dc, is_media, target, domains
+                ) if not is_test_dc else None
 
-        now = time.monotonic()
-        fail_until = dc_fail_until.get(dc_key, 0)
-        ws_timeout = WS_FAIL_TIMEOUT if now < fail_until else 10.0
+                if not ws:
+                    log.info("[%s] DC%d%s WS connect to %s was timed out -> fallback",
+                            label, dc, media_tag, target)
+                else:
+                    log.info("[%s] DC%d%s WS connect to %s was timed out, but pool hit -> using WS",
+                            label, dc, media_tag, target)
 
-        domains = ws_domains(dc, is_media)
-        target = proxy_config.dc_redirects[dc]
-        ws = None
+            if not ws:
+                splitter = None
+                try:
+                    splitter = MsgSplitter(relay_init, proto_int)
+                except Exception:
+                    pass
+                ok = await do_fallback(
+                    clt_reader, clt_writer, relay_init, label,
+                    dc, is_test_dc, is_media, media_tag,
+                    ctx, splitter=splitter)
+                if not ok:
+                    log.warning("[%s] DC%d%s no fallback available",
+                                label, dc, media_tag)
+                return
+
+        ws_timeout = WS_FAIL_TIMEOUT if now < dc_fail_until.get(dc_key, 0) else 5.0
         ws_failed_redirect = False
+        ws_timed_out = False
         all_redirects = True
 
-        ws = await ws_pool.get(dc, is_media, target, domains)
+        ws = ws or await ws_pool.get(
+            dc, is_media, target, domains
+        ) if not is_test_dc else None
         if ws:
             log.info("[%s] DC%d%s -> pool hit via %s",
                      label, dc, media_tag, target)
         else:
             for domain in domains:
-                url = f'wss://{domain}/apiws'
+                url = f'wss://{domain}{ws_path}'
                 log.info("[%s] DC%d%s -> %s via %s",
                          label, dc, media_tag, url, target)
                 try:
                     ws = await RawWebSocket.connect(target, domain,
-                                                    timeout=ws_timeout)
+                                                    timeout=ws_timeout,
+                                                    path=ws_path)
                     all_redirects = False
                     break
                 except WsHandshakeError as exc:
@@ -349,6 +379,12 @@ async def _handle_client(reader, writer, secret: bytes):
                         all_redirects = False
                         log.warning("[%s] DC%d%s WS handshake: %s",
                                     label, dc, media_tag, exc.status_line)
+                except asyncio.TimeoutError:
+                    stats.ws_errors += 1
+                    ws_timed_out = True
+                    log.warning("[%s] DC%d%s WS connect timed out via %s",
+                                label, dc, media_tag, domain)
+                    break
                 except Exception as exc:
                     stats.ws_errors += 1
                     all_redirects = False
@@ -357,6 +393,11 @@ async def _handle_client(reader, writer, secret: bytes):
 
         # WS failed -> fallback
         if ws is None:
+            if ws_timed_out:
+                ip_fail_until[target] = now + IP_FAIL_COOLDOWN
+                log.info("[%s] DC%d%s WS connect to %s timed out, cooldown for %ds",
+                         label, dc, media_tag, target, int(IP_FAIL_COOLDOWN))
+
             if ws_failed_redirect and all_redirects:
                 ws_blacklist.add(dc_key)
                 log.warning("[%s] DC%d%s blacklisted for WS (all 302)",
@@ -365,7 +406,7 @@ async def _handle_client(reader, writer, secret: bytes):
                 dc_fail_until[dc_key] = now + DC_FAIL_COOLDOWN
             else:
                 dc_fail_until[dc_key] = now + DC_FAIL_COOLDOWN
-                log.info("[%s] DC%d%s WS cooldown for %ds",
+                log.info("[%s] DC%d%s WS failed for %ds",
                          label, dc, media_tag, int(DC_FAIL_COOLDOWN))
 
             splitter_fb = None
@@ -375,14 +416,15 @@ async def _handle_client(reader, writer, secret: bytes):
                 pass
             ok = await do_fallback(
                 clt_reader, clt_writer, relay_init, label,
-                dc, is_media, media_tag,
+                dc, is_test_dc, is_media, media_tag,
                 ctx, splitter=splitter_fb)
             if ok:
                 log.info("[%s] DC%d%s fallback closed",
                          label, dc, media_tag)
             return
 
-        dc_fail_until.pop(dc_key, None)
+        ip_fail_until.pop(target, None)
+        ws_pool.report_success(dc, is_media)
         stats.connections_ws += 1
 
         splitter = None
@@ -436,14 +478,14 @@ async def _run(stop_event: Optional[asyncio.Event] = None):
     cf_worker_pool.reset()
     ws_blacklist.clear()
     dc_fail_until.clear()
+    ip_fail_until.clear()
     _client_tasks.clear()
 
-    if proxy_config.fallback_cfproxy:
-        user = proxy_config.cfproxy_user_domains
-        if user:
-            balancer.update_domains_list(user)
-        else:
-            start_cfproxy_domain_refresh()
+    user_cf_domains = proxy_config.cfproxy_user_domains
+    if user_cf_domains:
+        balancer.update_domains_list(user_cf_domains)
+    else:
+        start_cfproxy_domain_refresh()
 
     secret_bytes = bytes.fromhex(proxy_config.secret)
 
@@ -484,7 +526,7 @@ async def _run(stop_event: Optional[asyncio.Event] = None):
         ip = proxy_config.dc_redirects.get(dc)
         log.info("    DC%d: %s", dc, ip)
     if proxy_config.fallback_cfproxy:
-        user_domain = "user" if proxy_config.cfproxy_user_domains else "auto"
+        user_domain = ", ".join(proxy_config.cfproxy_user_domains) if proxy_config.cfproxy_user_domains else "auto"
         log.info("  CF proxy:      enabled (%s)", user_domain)
     if proxy_config.cfproxy_worker_domains:
         log.info("  CF worker:     enabled (%s)",
@@ -511,37 +553,82 @@ async def _run(stop_event: Optional[asyncio.Event] = None):
     await ws_pool.warmup()
     await cf_worker_pool.warmup()
 
+    async def _quiet_cancel(t):
+        if not t.done():
+            t.cancel()
+        try:
+            await t
+        except (asyncio.CancelledError, Exception):
+            pass
+
     try:
-        async with server:
-            if stop_event:
-                serve_task = asyncio.create_task(server.serve_forever())
-                stop_task = asyncio.create_task(stop_event.wait())
-                done, _ = await asyncio.wait(
-                    (serve_task, stop_task),
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                if stop_task in done:
-                    server.close()
-                    await server.wait_closed()
-                    if not serve_task.done():
-                        serve_task.cancel()
-                        try:
-                            await serve_task
-                        except asyncio.CancelledError:
-                            pass
-                else:
-                    stop_task.cancel()
-                    try:
-                        await stop_task
-                    except asyncio.CancelledError:
-                        pass
-            else:
-                await server.serve_forever()
+        while True:
+            serve_task = asyncio.create_task(server.serve_forever())
+            stop_task = (asyncio.create_task(stop_event.wait())
+                         if stop_event else None)
+
+            async def _listener_watchdog():
+                while True:
+                    await asyncio.sleep(LISTENER_CHECK_INTERVAL)
+                    socks = server.sockets
+                    if not socks or all(s.fileno() < 0 for s in socks):
+                        return
+
+            watchdog_task = asyncio.create_task(_listener_watchdog())
+            waiters = [serve_task, watchdog_task]
+            if stop_task is not None:
+                waiters.append(stop_task)
+
+            done, _ = await asyncio.wait(
+                waiters, return_when=asyncio.FIRST_COMPLETED)
+
+            if stop_task is not None and stop_task in done:
+                for task in list(_client_tasks):
+                    task.cancel()
+                if _client_tasks:
+                    await asyncio.gather(
+                        *_client_tasks, return_exceptions=True)
+                await _quiet_cancel(watchdog_task)
+                await _quiet_cancel(serve_task)
+                server.close()
+                await server.wait_closed()
+                break
+
+            await _quiet_cancel(watchdog_task)
+            await _quiet_cancel(serve_task)
+            log.warning(
+                "Listening socket died, restarting server")
+            server.close()
+            try:
+                await server.wait_closed()
+            except Exception:
+                pass
+            await asyncio.sleep(LISTENER_RESTART_DELAY)
+            try:
+                server = await asyncio.start_server(
+                    client_cb, proxy_config.host, proxy_config.port)
+            except OSError as exc:
+                log.error("Failed to restart server: %s", repr(exc))
+                break
+            _server_instance = server
+            for sock in server.sockets:
+                try:
+                    sock.setsockopt(
+                        _socket.IPPROTO_TCP, _socket.TCP_NODELAY, 1)
+                except (OSError, AttributeError):
+                    pass
+            log.warning("Server restored, listening on %s:%d",
+                        proxy_config.host, proxy_config.port)
     finally:
         log_stats_task.cancel()
         try:
             await log_stats_task
         except asyncio.CancelledError:
+            pass
+        try:
+            server.close()
+            await server.wait_closed()
+        except Exception:
             pass
     _server_instance = None
 
@@ -561,15 +648,16 @@ def main():
                     help='MTProto proxy secret (32 hex chars). '
                          'Auto-generated if not provided.')
     ap.add_argument('--dc-ip', metavar='DC:IP', action='append',
-                    help='Target IP for a DC, e.g. --dc-ip 2:149.154.167.51')
+                    help='Target IP for a DC, e.g. --dc-ip 2:149.154.167.220')
     ap.add_argument('-v', '--verbose', action='store_true',
                     help='Debug logging')
     ap.add_argument('--log-file', type=str, default=None, metavar='PATH',
                     help='Log to file with rotation (default: stderr only)')
     ap.add_argument('--log-max-mb', type=float, default=5, metavar='MB',
                     help='Max log file size in MB before rotation (default 5)')
-    ap.add_argument('--log-backups', type=int, default=0, metavar='N',
-                    help='Number of rotated log files to keep (default 0)')
+    ap.add_argument('--log-backups', type=int, default=1, metavar='N',
+                    help='Number of rotated log files to keep (min 1; '
+                         'rotation needs at least one backup to bound size)')
     ap.add_argument('--buf-kb', type=int, default=256, metavar='KB',
                     help='Socket send/recv buffer size in KB (default 256)')
     ap.add_argument('--pool-size', type=int, default=4, metavar='N',
@@ -589,13 +677,18 @@ def main():
                     metavar='DOMAIN',
                     help='Enable Fake TLS (ee-secret) masking with the given '
                          'SNI domain, e.g. example.com')
+    ap.add_argument('--force-test-dc', action='store_true',
+                    help='Force ALL traffic to Telegram TEST datacenters. '
+                         'Not needed for Telegram Desktop (test DCs 10001+ '
+                         'are detected automatically); use for clients that '
+                         'signal test DCs as plain 1-3')
     ap.add_argument('--proxy-protocol', action='store_true',
                     help='Accept PROXY protocol v1 header '
                          '(for use behind nginx/haproxy with proxy_protocol on)')
     args = ap.parse_args()
 
     if not args.dc_ip:
-        args.dc_ip = ['2:149.154.167.51', '4:149.154.167.91']
+        args.dc_ip = ['2:149.154.167.220', '4:149.154.167.220']
 
     try:
         dc_redirects = parse_dc_ip_list(args.dc_ip)
@@ -628,6 +721,7 @@ def main():
     proxy_config.cfproxy_worker_domains = coerce_domain_list(args.cfproxy_worker_domain)
     proxy_config.fake_tls_domain = args.fake_tls_domain.strip()
     proxy_config.proxy_protocol = args.proxy_protocol
+    proxy_config.force_test_dc = args.force_test_dc
 
     log_level = logging.DEBUG if args.verbose else logging.INFO
     log_fmt = logging.Formatter('%(asctime)s  %(levelname)-5s  %(message)s',
@@ -637,16 +731,18 @@ def main():
 
     console = logging.StreamHandler()
     console.setFormatter(log_fmt)
+    console.addFilter(DomainCensorFilter())
     root.addHandler(console)
 
     if args.log_file:
-        fh = logging.handlers.RotatingFileHandler(
+        from utils.logging_setup import build_log_handler
+        fh = build_log_handler(
             args.log_file,
-            maxBytes=max(32 * 1024, int(args.log_max_mb * 1024 * 1024)),
-            backupCount=max(0, args.log_backups),
-            encoding='utf-8',
+            log_max_mb=args.log_max_mb,
+            backups=args.log_backups,
         )
         fh.setFormatter(log_fmt)
+        fh.addFilter(DomainCensorFilter())
         root.addHandler(fh)
 
     logging.getLogger('asyncio').setLevel(logging.WARNING)
