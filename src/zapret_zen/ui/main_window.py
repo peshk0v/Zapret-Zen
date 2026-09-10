@@ -4061,6 +4061,10 @@ class _SettingsTabButton(QWidget):
         )
         self._active_anim.start()
 
+    def set_text(self, text: str) -> None:
+        self._text = text
+        self.update()
+
     def enterEvent(self, event):
         self._hover_anim.stop()
         self._hover_anim.setDirection(QAbstractAnimation.Direction.Forward)
@@ -4161,6 +4165,10 @@ class _SettingsTabBar(QWidget):
     def set_accent(self, c: QColor):
         for btn in self._btns:
             btn.set_accent(c)
+
+    def set_texts(self, tabs: list[str]) -> None:
+        for btn, text in zip(self._btns, tabs):
+            btn.set_text(text)
 
     def set_light_theme(self, light: bool) -> None:
         for btn in self._btns:
@@ -7409,10 +7417,18 @@ class MainWindow(QMainWindow):
         ctrl[key] = group
         return seg
 
-    def _settings_section_label(self, text: str) -> QLabel:
-        lbl = QLabel(text)
-        lbl.setProperty("class", "title")
-        return lbl
+    def _add_component_card_heading(self, card_layout: QVBoxLayout, component_id: str, display_name: str) -> None:
+        settings_titles = {
+            "zapret": self._t("Настройки Zapret", "Zapret settings"),
+            "dns-manager": self._t("Настройки DNS Manager", "DNS Manager settings"),
+            "tg-ws-proxy": self._t("Настройки TG WS Proxy", "TG WS Proxy settings"),
+        }
+        title_text = settings_titles.get(component_id, display_name)
+        title_label = QLabel(title_text)
+        title_label.setProperty("class", "cardTitle")
+        title_label.setContentsMargins(0, 8, 0, 0)
+        title_label.setWordWrap(True)
+        card_layout.addWidget(title_label)
 
     def _current_settings_value(self, ctrl: dict, key: str, fallback: object) -> object:
         existing = ctrl.get(key)
@@ -7472,7 +7488,6 @@ class MainWindow(QMainWindow):
 
     def _build_zapret_card_settings(self, layout: QVBoxLayout, ctrl: dict) -> None:
         settings = self.context.settings.get()
-        layout.addWidget(self._settings_section_label(self._t("Настройки Zapret", "Zapret settings")))
         ipset_current = self._current_settings_value(ctrl, "ipset_mode", settings.zapret_ipset_mode)
         layout.addWidget(QLabel("IPSet mode"))
         layout.addWidget(
@@ -7511,7 +7526,6 @@ class MainWindow(QMainWindow):
 
     def _build_tg_card_settings(self, layout: QVBoxLayout, ctrl: dict) -> None:
         settings = self.context.settings.get()
-        layout.addWidget(self._settings_section_label(self._t("Настройки TG WS Proxy", "TG WS Proxy settings")))
         tg_host = QLineEdit()
         tg_host.setText(str(self._current_settings_value(ctrl, "tg_host", settings.tg_proxy_host or "") or ""))
         ctrl["tg_host"] = tg_host
@@ -7745,6 +7759,15 @@ class MainWindow(QMainWindow):
 
     # ── Main settings page builder ─────────────────────────────────────────────
 
+    def _settings_tab_labels(self) -> list[str]:
+        return [
+            self._t("Приложение", "Application"),
+            self._t("Компоненты", "Components"),
+            self._t("Инструменты", "Tools"),
+            self._t("Файлы", "Files"),
+            self._t("Логи", "Logs"),
+        ]
+
     def _build_settings_page(self) -> QWidget:
         page = QWidget()
         page.setObjectName("SettingsPage")
@@ -7755,14 +7778,9 @@ class MainWindow(QMainWindow):
 
         settings = self.context.settings.get()
         accent_color = QColor(getattr(settings, 'accent_color', '#7380ff'))
-        tab_bar = _SettingsTabBar([
-            "Application",
-            self._t("Files"),
-            self._t("Logs"),
-            self._t("Tools"),
-            self._t("Компоненты", "Components"),
-        ], light_theme=self._light_theme, accent_color=accent_color)
+        tab_bar = _SettingsTabBar(self._settings_tab_labels(), light_theme=self._light_theme, accent_color=accent_color)
         tab_bar.setObjectName("SettingsTabBar")
+        self._settings_tab_bar = tab_bar
         root.addWidget(tab_bar)
 
         # use single shared ctrl dict for all sub-tabs that have settings
@@ -7775,10 +7793,10 @@ class MainWindow(QMainWindow):
 
         builders = [
             self._build_app_settings_page,
+            self._build_components_settings_page,
+            self._build_tools_settings_page,
             self._build_files_settings_page,
             self._build_logs_settings_page,
-            self._build_tools_settings_page,
-            self._build_components_settings_page,
         ]
         for builder in builders:
             sub_page, sub_ctrl = builder()
@@ -7786,7 +7804,7 @@ class MainWindow(QMainWindow):
             self._settings_stack.addWidget(sub_page)
 
         page._settings_ctrl = all_ctrl
-        self._components_settings_index = self._settings_stack.count() - 1
+        self._components_settings_index = builders.index(self._build_components_settings_page)
 
         def _on_settings_tab_changed(index: int) -> None:
             self._settings_stack.setCurrentIndex(index)
@@ -9899,6 +9917,8 @@ class MainWindow(QMainWindow):
 
         if getattr(self, "_settings_btn", None) is not None:
             self._settings_btn.setToolTip(self._t("Settings"))
+        if getattr(self, "_settings_tab_bar", None) is not None:
+            self._settings_tab_bar.set_texts(self._settings_tab_labels())
         if getattr(self, "_onboarding_back_btn", None) is not None:
             self._onboarding_back_btn.setToolTip(self._t("Back"))
         if self._dashboard_title_label is not None:
@@ -14736,7 +14756,6 @@ class MainWindow(QMainWindow):
                 "Local Telegram Proxy. Lets Telegram connect through restrictions by blending in with regular HTTPS traffic.",
             ),
         }
-        icons = {"zapret": "component_zapret.svg", "dns-manager": "component_dns.svg", "tg-ws-proxy": "component_tg.svg"}
         component_cards: list[QFrame] = []
         settings_ctrl: dict = self._components_settings_ctrl() or {}
 
@@ -14748,13 +14767,7 @@ class MainWindow(QMainWindow):
             card.setMinimumWidth(360)
             card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
             self._components_card_by_id[component.id] = card
-            title = QLabel(display_name)
-            title.setWordWrap(True)
-            title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            theme = self.context.settings.get().theme
-            title_color = "#f5f7fc" if not is_light_theme(theme) else "#1a2332"
-            title.setStyleSheet(f"font-family: '{self._headers_font_family}'; font-size: 32pt; font-weight: 400; color: {title_color}; margin-top: 16px;")
-            card_layout.addWidget(title)
+            self._add_component_card_heading(card_layout, component.id, display_name)
 
             description_text = descriptions.get(component.id, component.description)
             desc = QLabel(description_text)
@@ -14857,9 +14870,6 @@ class MainWindow(QMainWindow):
 
             if component.id == "dns-manager":
                 settings_dns = self.context.settings.get()
-                section_heading = QLabel(self._t("Настройки DNS Manager", "DNS Manager settings"))
-                section_heading.setProperty("class", "title")
-                card_layout.addWidget(section_heading)
                 dns_presets = self._dns_presets_cache
                 config_label = QLabel(self._t("DNS Server"))
                 config_label.setProperty("class", "muted")
