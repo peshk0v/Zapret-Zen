@@ -4367,7 +4367,6 @@ class MainWindow(QMainWindow):
         self._services_count_label: QLabel | None = None
         self._services_grid: ServiceGridPanel | None = None
         self._services_scroll: QScrollArea | None = None
-        self._components_title_label: QLabel | None = None
         self._mods_title_label: QLabel | None = None
         self._mods_subtitle_label: QLabel | None = None
         self._mods_add_btn: QPushButton | None = None
@@ -6710,7 +6709,6 @@ class MainWindow(QMainWindow):
 
     def _build_components_page(self) -> QWidget:
         self._components_page = ComponentsPage(self)
-        self._components_title_label = self._components_page._title_label
         self._components_scroll = self._components_page._scroll
         self._components_cards_root = self._components_page._cards_root
         self._components_cards_layout = self._components_page._cards_layout
@@ -9939,8 +9937,6 @@ class MainWindow(QMainWindow):
                         "The app automatically adjusts its behavior to provide access to the selected services.",
                     )
                 )
-        if self._components_title_label is not None:
-            self._components_title_label.setText(self._t("Components"))
         if self._mods_title_label is not None:
             self._mods_title_label.setText(self._t("Mods"))
         if self._mods_subtitle_label is not None:
