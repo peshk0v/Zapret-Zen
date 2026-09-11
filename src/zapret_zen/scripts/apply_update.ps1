@@ -40,16 +40,20 @@ function Add-UpdateLog([string]$message) {
   } catch {}
 }
 
+function Get-PythonRuntimeDlls([string]$dir) {
+  return @(Get-ChildItem -LiteralPath $dir -File -Force -Filter 'python3*.dll' -ErrorAction SilentlyContinue)
+}
+
 function Test-StandalonePayload([string]$sourceDir) {
-  return (Test-Path (Join-Path $sourceDir 'python311.dll')) -and
+  return (Test-Path (Join-Path $sourceDir 'zapret_zen.exe')) -and
          (Test-Path (Join-Path $sourceDir 'python3.dll')) -and
-         (Test-Path (Join-Path $sourceDir 'zapret_zen.exe'))
+         (@(Get-PythonRuntimeDlls $sourceDir).Count -gt 0)
 }
 
 function Test-InstalledStandalone([string]$targetDir) {
-  return (Test-Path (Join-Path $targetDir 'python311.dll')) -and
+  return (Test-Path (Join-Path $targetDir 'zapret_zen.exe')) -and
          (Test-Path (Join-Path $targetDir 'python3.dll')) -and
-         (Test-Path (Join-Path $targetDir 'zapret_zen.exe'))
+         (@(Get-PythonRuntimeDlls $targetDir).Count -gt 0)
 }
 
 function Overlay-Tree([string]$sourceDir, [string]$targetDir, [string[]]$preserveNames) {
@@ -62,7 +66,9 @@ function Overlay-Tree([string]$sourceDir, [string]$targetDir, [string[]]$preserv
   Get-ChildItem -LiteralPath $targetDir -Force -ErrorAction SilentlyContinue | ForEach-Object {
     if ($preserveNames -contains $_.Name) { return }
     if (-not $sourceNames.ContainsKey($_.Name)) {
-      [void](Remove-PathRobust $_.FullName)
+      if (-not (Remove-PathRobust $_.FullName)) {
+        Add-UpdateLog ('stale item NOT removed from target: ' + $_.FullName)
+      }
     }
   }
   foreach ($item in $sourceItems) {
@@ -72,7 +78,9 @@ function Overlay-Tree([string]$sourceDir, [string]$targetDir, [string[]]$preserv
       Overlay-Tree $item.FullName $dest $preserveNames
     } else {
       if (Test-Path $dest) {
-        [void](Remove-PathRobust $dest)
+        if (-not (Remove-PathRobust $dest)) {
+          Add-UpdateLog ('could not replace existing item, attempting overwrite: ' + $dest)
+        }
       }
       New-Item -ItemType Directory -Path (Split-Path $dest -Parent) -Force | Out-Null
       try {
@@ -121,8 +129,18 @@ if ($sourceIsStandalone) {
   Add-UpdateLog 'standalone payload detected'
   $oldInternal = Join-Path $dst '_internal'
   if (Test-Path $oldInternal) {
-    [void](Remove-PathRobust $oldInternal)
-    Add-UpdateLog 'old _internal removed for standalone update'
+    if (Remove-PathRobust $oldInternal) {
+      Add-UpdateLog 'old _internal removed for standalone update'
+    } else {
+      Add-UpdateLog 'WARNING: old _internal could not be fully removed; overlay will merge leftover files'
+    }
+  }
+} else {
+  $oldInternal = Join-Path $dst '_internal'
+  if ((Test-Path $oldInternal) -and -not (Test-Path (Join-Path $src '_internal'))) {
+    if (Remove-PathRobust $oldInternal) {
+      Add-UpdateLog 'stale _internal removed (new payload has no _internal)'
+    }
   }
 }
 
@@ -131,7 +149,8 @@ Add-Content -LiteralPath $logPath -Value ('[' + (Get-Date -Format s) + '] payloa
 
 if ($sourceIsStandalone -and -not (Test-InstalledStandalone $dst)) {
   Add-UpdateLog 'standalone validation failed after overlay, retrying top-level runtime files'
-  foreach ($fileName in @('zapret_zen.exe', 'python311.dll', 'python3.dll')) {
+  $runtimeFiles = @('zapret_zen.exe', 'python3.dll') + @(Get-PythonRuntimeDlls $src | ForEach-Object { $_.Name })
+  foreach ($fileName in $runtimeFiles) {
     $sourceFile = Join-Path $src $fileName
     $targetFile = Join-Path $dst $fileName
     if (Test-Path $sourceFile) {
@@ -166,6 +185,17 @@ if ($sourceIsStandalone -and -not (Test-InstalledStandalone $dst)) {
 }
 
 Start-Sleep -Milliseconds 400
+
+$qpaPlugin = Get-ChildItem -LiteralPath $dst -File -Recurse -ErrorAction SilentlyContinue |
+             Where-Object { $_.DirectoryName -match '\\platforms$' -and $_.Name -eq 'qwindows.dll' } |
+             Select-Object -First 1
+if (-not $qpaPlugin) {
+  Add-UpdateLog 'ERROR: Qt Windows platform plugin (platforms/qwindows.dll) missing after update'
+  Start-Process -FilePath (Join-Path $dst 'zapret_zen.exe') -WorkingDirectory $dst
+  exit 3
+}
+Add-UpdateLog ('Qt platform plugin found: ' + $qpaPlugin.FullName)
+
 $launch = Join-Path $dst 'zapret_zen.exe'
 Start-Process -FilePath $launch -WorkingDirectory $dst
 Add-Content -LiteralPath $logPath -Value ('[' + (Get-Date -Format s) + '] relaunched app')
