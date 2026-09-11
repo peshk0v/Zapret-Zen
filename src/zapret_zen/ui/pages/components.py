@@ -3,7 +3,6 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QFrame,
-    QHBoxLayout,
     QLabel,
     QListWidget,
     QAbstractItemView,
@@ -25,7 +24,7 @@ class ComponentsPage(BasePage):
         self._title_label: QLabel | None = None
         self._scroll: QScrollArea | None = None
         self._cards_root: QWidget | None = None
-        self._cards_layout: QHBoxLayout | None = None
+        self._cards_layout: QVBoxLayout | None = None
         self._card_by_id: dict[str, QFrame] = {}
         self._scroll_target_component_id = ""
 
@@ -42,17 +41,16 @@ class ComponentsPage(BasePage):
         self._scroll.setObjectName("ComponentsScroll")
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._cards_root = QWidget()
         self._cards_root.setObjectName("ComponentsCanvas")
         self._cards_root.setProperty("class", "pageCanvas")
-        self._cards_layout = QHBoxLayout(self._cards_root)
-        self._cards_layout.setContentsMargins(1, 0, 1, 12)
+        self._cards_layout = QVBoxLayout(self._cards_root)
+        self._cards_layout.setContentsMargins(12, 0, 12, 12)
         self._cards_layout.setSpacing(12)
-        self._cards_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self._cards_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self._scroll.setWidget(self._cards_root)
         self._register_scroll_fade(self._scroll)
-        self._register_scroll_arrow(self._scroll)
         self._register_smooth_scroll(self._scroll)
         root.addWidget(self._scroll, 1)

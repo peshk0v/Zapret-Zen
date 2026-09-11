@@ -145,13 +145,12 @@ def ensure_theme_files(themes_dir: Path | str) -> None:
 def _build_base_css() -> tuple[str, str]:
     night = """
     QWidget {
-        background: #0f1420;
         color: #d9e0f0;
         font-family: "JetBrains Sans", "Segoe UI Variable", "Segoe UI", "Arial", "Noto Sans", sans-serif;
         font-size: 10pt;
     }
     #WindowShell {
-        background: transparent;
+        background: #0f1420;
     }
     QStackedWidget, QStackedWidget > QWidget, QWidget#PagesShell, QStackedWidget#PagesStack {
         background: transparent;
@@ -252,6 +251,11 @@ def _build_base_css() -> tuple[str, str]:
         background: qlineargradient(x1:0, y1:1, x2:1, y2:0, stop:0 #131d30, stop:0.68 #162238, stop:1 #1a2842);
         border: 1px solid #243550;
         border-radius: 16px;
+    }
+    QLabel[class="cardTitle"] {
+        font-size: 11pt;
+        font-weight: 700;
+        color: #e8eefc;
     }
     QFrame[class="modBadge"] {
         background: qlineargradient(x1:0, y1:1, x2:1, y2:0, stop:0 #131d30, stop:0.68 #162238, stop:1 #1a2842);
@@ -554,6 +558,26 @@ def _build_base_css() -> tuple[str, str]:
         height: 12px;
         __COMBO_ARROW__
     }
+    QComboBox QAbstractItemView {
+        background: #111a2b;
+        border: 1px solid #2f4468;
+        border-radius: 8px;
+        padding: 4px;
+        outline: none;
+        selection-background-color: #37568a;
+    }
+    #DialogRoot QProgressBar {
+        background: #111a2b;
+        border: 1px solid #2f4468;
+        border-radius: 9px;
+        padding: 0px;
+        color: #d9e0f0;
+        text-align: center;
+    }
+    #DialogRoot QProgressBar::chunk {
+        background: __ACCENT__;
+        border-radius: 7px;
+    }
     QListWidget {
         background: #111a2b;
         border: 1px solid #2f4468;
@@ -735,13 +759,12 @@ def _build_base_css() -> tuple[str, str]:
 
     light = """
     QWidget {
-        background: #eef2f8;
         color: #1f2a3d;
         font-family: "JetBrains Sans", "Segoe UI Variable", "Segoe UI", "Arial", "Noto Sans", sans-serif;
         font-size: 10pt;
     }
     #WindowShell {
-        background: transparent;
+        background: #eef2f8;
     }
     QStackedWidget, QStackedWidget > QWidget, QWidget#PagesShell, QStackedWidget#PagesStack {
         background: transparent;
@@ -842,6 +865,11 @@ def _build_base_css() -> tuple[str, str]:
         background: #ffffff;
         border: 1px solid #d2ddeb;
         border-radius: 16px;
+    }
+    QLabel[class="cardTitle"] {
+        font-size: 11pt;
+        font-weight: 700;
+        color: #26324b;
     }
     QFrame[class="modBadge"] {
         background: #ffffff;
@@ -1143,6 +1171,27 @@ def _build_base_css() -> tuple[str, str]:
         width: 12px;
         height: 12px;
         __COMBO_ARROW__
+    }
+    QComboBox QAbstractItemView {
+        background: #ffffff;
+        border: 1px solid #cedbea;
+        border-radius: 8px;
+        padding: 4px;
+        outline: none;
+        selection-background-color: __ACCENT__;
+        selection-color: #ffffff;
+    }
+    #DialogRoot QProgressBar {
+        background: #eef4ff;
+        border: 1px solid #cedbea;
+        border-radius: 9px;
+        padding: 0px;
+        color: #1f2a3d;
+        text-align: center;
+    }
+    #DialogRoot QProgressBar::chunk {
+        background: __ACCENT__;
+        border-radius: 7px;
     }
     QListWidget {
         background: #ffffff;

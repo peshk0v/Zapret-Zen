@@ -24,12 +24,14 @@ import ipaddress
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib import parse as urlparse
 
 XBOX_DNS_URL = "https://xbox-dns.ru/"
 FALLBACK_IPV4 = ("111.88.96.50", "111.88.96.51")
@@ -42,6 +44,7 @@ PRESETS: dict[str, dict[str, Any]] = {
         "name": "XBox DNS",
         "ipv4": ["111.88.96.50", "111.88.96.51"],
         "ipv6": ["2a00:ab00:1233:26::50", "2a00:ab00:1233:26::51"],
+        "doh": "https://xbox-dns.ru/dns-query",
         "source": "xbox-dns.ru",
     },
     "comss": {
@@ -76,6 +79,7 @@ PRESETS: dict[str, dict[str, Any]] = {
         "name": "Yandex DNS",
         "ipv4": ["77.88.8.8", "77.88.8.1"],
         "ipv6": ["2a02:6b8::feed:0ff", "2a02:6b8:0:1::feed:0ff"],
+        "doh": "https://common.dot.dns.yandex.net/dns-query",
         "source": "yandex.com",
     },
 }
@@ -135,6 +139,41 @@ def parse_xbox_dns_servers(html: str) -> dict[str, list[str]]:
         elif parsed.version == 6:
             ipv6.append(candidate)
     return {"ipv4": ipv4[:2], "ipv6": ipv6[:2]}
+
+
+def resolve_doh_host(doh: str) -> tuple[list[str], list[str]]:
+    """Resolve the hostname inside a DNS-over-HTTPS URL to (ipv4, ipv6) addresses."""
+    if not doh:
+        return [], []
+    try:
+        host = urlparse.urlsplit(doh).hostname
+    except Exception:
+        host = ""
+    if not host:
+        return [], []
+    ipv4: list[str] = []
+    ipv6: list[str] = []
+    seen: set[str] = set()
+    try:
+        for family in (socket.AF_INET, socket.AF_INET6):
+            try:
+                results = socket.getaddrinfo(host, 443, family, socket.SOCK_STREAM)
+            except OSError:
+                continue
+            for item in results:
+                ip = str(item[4][0])
+                if not ip or ip in seen or "%" in ip:
+                    continue
+                seen.add(ip)
+                if family == socket.AF_INET:
+                    ipv4.append(ip)
+                else:
+                    ipv6.append(ip)
+                if len(ipv4) + len(ipv6) >= 4:
+                    break
+    except OSError:
+        pass
+    return ipv4[:2], ipv6[:2]
 
 
 def fetch_xbox_dns_servers() -> dict[str, Any]:
@@ -289,8 +328,11 @@ def _ensure_list(value: Any) -> list[Any]:
     return [value]
 
 
-def apply_windows_dns(adapters: list[dict[str, Any]], ipv4: list[str], ipv6: list[str]) -> None:
-    payload = json.dumps({"adapters": adapters, "ipv4": ipv4, "ipv6": ipv6}, ensure_ascii=False)
+def apply_windows_dns(adapters: list[dict[str, Any]], ipv4: list[str], ipv6: list[str], doh: str = "") -> None:
+    payload = json.dumps(
+        {"adapters": adapters, "ipv4": ipv4, "ipv6": ipv6, "doh": doh},
+        ensure_ascii=False,
+    )
     script = r"""
 $payload = @'
 __PAYLOAD__
@@ -302,6 +344,21 @@ function Clear-HubRegistryDns($guid, $family) {
   if (Test-Path -LiteralPath $path) {
     try { Set-ItemProperty -LiteralPath $path -Name NameServer -Value "" -ErrorAction Stop } catch {}
   }
+}
+function Set-HubDoh($ifIndex, $doh, $dohIps) {
+  if (-not $doh) { return }
+  try {
+    if (-not (Get-Command Set-DnsClientDohServerAddress -ErrorAction SilentlyContinue)) { return }
+    Get-DnsClientDohServerAddress -InterfaceIndex $ifIndex -ErrorAction SilentlyContinue | ForEach-Object {
+      try { Remove-DnsClientDohServerAddress -InterfaceIndex $ifIndex -ServerAddress $_.ServerAddress -DohTemplate $_.DohTemplate -ErrorAction Stop | Out-Null } catch {}
+    }
+    foreach ($ip in @($dohIps)) {
+      if ([string]$ip -eq '') { continue }
+      try {
+        Set-DnsClientDohServerAddress -InterfaceIndex $ifIndex -ServerAddress ([string]$ip) -DohTemplate ([string]$doh) -AllowFallbackToUdp -ErrorAction Stop | Out-Null
+      } catch {}
+    }
+  } catch {}
 }
 function Set-HubDnsServers($ifIndex, $guid, $ipv4, $ipv6) {
   $serverList = @(@($ipv4) + @($ipv6) | Where-Object { [string]$_ -ne '' })
@@ -318,7 +375,9 @@ foreach ($adapter in @($payload.adapters)) {
   $ifIndex = [int]$adapter.interface_index
   if ($ifIndex -le 0) { continue }
   $guid = [string]$adapter.interface_guid
+  $dohIps = @(@($payload.ipv4) + @($payload.ipv6) | Where-Object { [string]$_ -ne '' })
   Set-HubDnsServers $ifIndex $guid @($payload.ipv4) @($payload.ipv6)
+  Set-HubDoh $ifIndex ([string]$payload.doh) $dohIps
 }
 """.replace("__PAYLOAD__", payload)
     proc = _run_powershell(script)
@@ -344,6 +403,14 @@ function Test-HubIgnoredAdapter($adapter) {
   return $false
 }
 $errors = @()
+function Clear-HubDoh($ifIndex) {
+  try {
+    if (-not (Get-Command Get-DnsClientDohServerAddress -ErrorAction SilentlyContinue)) { return }
+    Get-DnsClientDohServerAddress -InterfaceIndex $ifIndex -ErrorAction SilentlyContinue | ForEach-Object {
+      try { Remove-DnsClientDohServerAddress -InterfaceIndex $ifIndex -ServerAddress $_.ServerAddress -DohTemplate $_.DohTemplate -ErrorAction Stop | Out-Null } catch {}
+    }
+  } catch {}
+}
 $adapters = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' -and $_.HardwareInterface -and -not (Test-HubIgnoredAdapter $_) })
 if ($adapters.Count -eq 0) {
   $adapters = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' -and -not (Test-HubIgnoredAdapter $_) })
@@ -352,6 +419,7 @@ foreach ($adapter in $adapters) {
   $ifIndex = [int]$adapter.ifIndex
   $guid = [string]$adapter.InterfaceGuid
   try {
+    Clear-HubDoh $ifIndex
     Set-DnsClientServerAddress -InterfaceIndex $ifIndex -ResetServerAddresses -ErrorAction Stop | Out-Null
     $root4 = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$guid"
     $root6 = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters\Interfaces\$guid"
@@ -404,9 +472,18 @@ function Set-HubDnsServers($ifIndex, $guid, $ipv4, $ipv6) {
     Set-DnsClientServerAddress -InterfaceIndex $ifIndex -ServerAddresses $serverList -ErrorAction Stop | Out-Null
   } catch { throw $_ }
 }
+function Clear-HubDoh($ifIndex) {
+  try {
+    if (-not (Get-Command Get-DnsClientDohServerAddress -ErrorAction SilentlyContinue)) { return }
+    Get-DnsClientDohServerAddress -InterfaceIndex $ifIndex -ErrorAction SilentlyContinue | ForEach-Object {
+      try { Remove-DnsClientDohServerAddress -InterfaceIndex $ifIndex -ServerAddress $_.ServerAddress -DohTemplate $_.DohTemplate -ErrorAction Stop | Out-Null } catch {}
+    }
+  } catch {}
+}
 foreach ($adapter in @($payload.adapters)) {
   $ifIndex = [int]$adapter.interface_index
   if ($ifIndex -le 0) { continue }
+  Clear-HubDoh $ifIndex
   $guid = [string]$adapter.interface_guid
   $ipv4Manual = if ($null -ne $adapter.ipv4_manual) { [bool]$adapter.ipv4_manual } else { @($adapter.ipv4).Count -gt 0 }
   $ipv6Manual = if ($null -ne $adapter.ipv6_manual) { [bool]$adapter.ipv6_manual } else { @($adapter.ipv6).Count -gt 0 }
@@ -462,7 +539,9 @@ def cmd_snapshot(state_path: Path) -> list[dict[str, Any]]:
     return adapters
 
 
-def cmd_apply(state_path: Path, ipv4: list[str], ipv6: list[str], source: str = "manual") -> None:
+def cmd_apply(state_path: Path, ipv4: list[str], ipv6: list[str], source: str = "manual", doh: str = "") -> None:
+    if not ipv4 and not ipv6 and doh:
+        ipv4, ipv6 = resolve_doh_host(doh)
     if not ipv4 and not ipv6:
         eprint("ERROR: at least one --ipv4 or --ipv6 address required")
         sys.exit(1)
@@ -476,7 +555,7 @@ def cmd_apply(state_path: Path, ipv4: list[str], ipv6: list[str], source: str = 
             sys.exit(1)
         state["previous_adapters"] = adapters
     try:
-        apply_windows_dns(adapters, ipv4, ipv6)
+        apply_windows_dns(adapters, ipv4, ipv6, doh=doh)
     except RuntimeError as exc:
         eprint(f"ERROR applying DNS: {exc}")
         if not state.get("active", False):
@@ -487,9 +566,6 @@ def cmd_apply(state_path: Path, ipv4: list[str], ipv6: list[str], source: str = 
         state["last_error"] = str(exc)
         write_state(state_path, state)
         sys.exit(1)
-    doh = ""
-    if source in PRESETS:
-        doh = PRESETS[source].get("doh", "") or ""
     state["active"] = True
     state["servers"] = {"ipv4": ipv4, "ipv6": ipv6, "source": source, "doh": doh}
     state["last_error"] = ""
@@ -586,6 +662,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="IPv4 DNS servers (use with --apply)")
     parser.add_argument("--ipv6", nargs="*", default=[], metavar="IP",
                         help="IPv6 DNS servers (use with --apply)")
+    parser.add_argument("--doh", type=str, default="", metavar="URL",
+                        help="DNS-over-HTTPS template (e.g. https://cloudflare-dns.com/dns-query)")
 
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--preset", type=str, metavar="NAME",
@@ -632,7 +710,7 @@ def main() -> None:
             sys.exit(1)
         ipv4 = list(preset["ipv4"])
         ipv6 = list(preset.get("ipv6", []))
-        doh = preset.get("doh", "")
+        doh = args.doh.strip() or preset.get("doh", "")
         eprint(f"Applying preset '{args.preset}': {preset['name']}")
         if doh:
             eprint(f"  DoH template: {doh}")
@@ -655,7 +733,7 @@ def main() -> None:
                     ipv6.append(a)
             except ValueError:
                 eprint(f"WARNING: '{a}' is not a valid IP address, skipping")
-        cmd_apply(state_path, ipv4, ipv6)
+        cmd_apply(state_path, ipv4, ipv6, source="custom", doh=args.doh.strip())
     elif args.restore:
         cmd_restore(state_path)
     elif args.reset:

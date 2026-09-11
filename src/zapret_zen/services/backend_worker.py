@@ -46,6 +46,8 @@ def _snapshot(context) -> dict[str, Any]:
             "autostart_windows": bool(settings.autostart_windows),
             "apply_update_on_next_launch": bool(getattr(settings, "apply_update_on_next_launch", False)),
             "selected_dns_preset": settings.selected_dns_preset,
+            "dns_custom_server": bool(getattr(settings, "dns_custom_server", False)),
+            "dns_custom_doh": str(getattr(settings, "dns_custom_doh", "") or ""),
         },
         "dns_presets": context.processes.list_dns_presets(),
     }
@@ -522,6 +524,11 @@ def _handle_apply_settings(context, payload, emit_progress):
     language_before = before.language
     autostart_before = bool(before.autostart_windows)
     quic_before = bool(before.zapret_block_quic)
+    dns_before = (
+        before.selected_dns_preset,
+        bool(getattr(before, "dns_custom_server", False)),
+        str(getattr(before, "dns_custom_doh", "") or ""),
+    )
     context.settings.update(**effective_payload)
     if "fortnite" in {str(item) for item in list(before.selected_service_ids or [])}:
         effective_payload["zapret_ipset_mode"] = "any"
@@ -557,6 +564,14 @@ def _handle_apply_settings(context, payload, emit_progress):
     if tg_before != tg_after and states.get("tg-ws-proxy") and states["tg-ws-proxy"].status == "running":
         context.processes.stop_component("tg-ws-proxy")
         context.processes.start_component("tg-ws-proxy")
+    dns_after = (
+        context.settings.get().selected_dns_preset,
+        bool(getattr(context.settings.get(), "dns_custom_server", False)),
+        str(getattr(context.settings.get(), "dns_custom_doh", "") or ""),
+    )
+    if dns_before != dns_after and states.get("dns-manager") and states["dns-manager"].status == "running":
+        context.processes.stop_component("dns-manager")
+        context.processes.start_component("dns-manager")
     zapret_restarted = False
     if zapret_before != zapret_after:
         zapret_restarted = _finish_zapret_reconfiguration(context, restart=zapret_was_running)
@@ -1246,18 +1261,6 @@ def _handle_set_tg_proxy_tuning_done(context, payload, emit_progress):
 def _handle_check_component_updates(context, payload, emit_progress):
     return {"updates": context.processes.check_component_updates()}
 
-
-@_register_action("apply_dns_preset")
-def _handle_apply_dns_preset(context, payload, emit_progress):
-    preset = str(payload.get("preset", "")).strip()
-    context.settings.update(selected_dns_preset=preset)
-    states = {item.component_id: item for item in context.processes.list_states()}
-    if states.get("dns-manager") and states["dns-manager"].status == "running":
-        context.processes.stop_component("dns-manager")
-        context.processes.start_component("dns-manager")
-    result = _snapshot(context)
-    result["dns_presets"] = context.processes.list_dns_presets()
-    return result
 
 class BackendWorkerClient(QObject):
     task_finished = Signal(dict)

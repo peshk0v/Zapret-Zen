@@ -1281,22 +1281,36 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
 
     def _start_dns_manager(self, component_id: str) -> ComponentState:
         settings = self.settings.get()
+        custom = bool(getattr(settings, "dns_custom_server", False))
+        custom_doh = (getattr(settings, "dns_custom_doh", "") or "").strip()
         preset = (settings.selected_dns_preset or "").strip()
-        if not preset:
-            try:
-                presets = self.list_dns_presets()
-                if presets:
-                    preset = str(presets[0].get("id", "")).strip()
-            except Exception:
-                preset = ""
-        if not preset:
-            state = ComponentState(
-                component_id=component_id,
-                status="error",
-                last_error="No DNS preset selected.",
-            )
-            self._states[component_id] = state
-            return state
+        if custom:
+            if not custom_doh:
+                state = ComponentState(
+                    component_id=component_id,
+                    status="error",
+                    last_error="Custom DNS-over-HTTPS address is empty.",
+                )
+                self._states[component_id] = state
+                return state
+            source = "custom"
+        else:
+            source = preset or "preset"
+            if not preset:
+                try:
+                    presets = self.list_dns_presets()
+                    if presets:
+                        preset = str(presets[0].get("id", "")).strip()
+                except Exception:
+                    preset = ""
+            if not preset:
+                state = ComponentState(
+                    component_id=component_id,
+                    status="error",
+                    last_error="No DNS preset selected.",
+                )
+                self._states[component_id] = state
+                return state
         try:
             dns = self._import_dns_manager()
             state_file = self._dns_manager_state_file()
@@ -1321,18 +1335,33 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
                 except Exception:
                     pass
 
-            p = dns.PRESETS.get(preset)
-            if p is None:
-                raise ValueError(f"Unknown DNS preset: {preset}")
+            if custom:
+                ipv4, ipv6 = dns.resolve_doh_host(custom_doh)
+                if not ipv4 and not ipv6:
+                    raise ValueError(f"Could not resolve DNS-over-HTTPS host: {custom_doh}")
+                doh_url = custom_doh
+            else:
+                p = dns.PRESETS.get(preset)
+                if p is None:
+                    raise ValueError(f"Unknown DNS preset: {preset}")
+                ipv4 = list(p["ipv4"])
+                ipv6 = list(p.get("ipv6", []))
+                doh_url = p.get("doh", "")
+                if doh_url:
+                    resolved4, resolved6 = dns.resolve_doh_host(doh_url)
+                    if resolved4:
+                        ipv4 = resolved4
+                    if resolved6:
+                        ipv6 = resolved6
 
             adapters = dns.snapshot_windows_dns()
             if not adapters:
                 raise RuntimeError("No active network adapters found for DNS snapshot")
 
-            dns.apply_windows_dns(adapters, list(p["ipv4"]), list(p.get("ipv6", [])))
+            dns.apply_windows_dns(adapters, ipv4, ipv6, doh=doh_url)
             dns.write_state(state_file, {
                 "active": True,
-                "servers": {"ipv4": list(p["ipv4"]), "ipv6": list(p.get("ipv6", [])), "source": preset},
+                "servers": {"ipv4": list(ipv4), "ipv6": list(ipv6), "source": source, "doh": doh_url},
                 "previous_adapters": adapters,
                 "snapshot_at": datetime.utcnow().isoformat(),
                 "updated_at": datetime.utcnow().isoformat(),
@@ -1341,7 +1370,7 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
 
             state = ComponentState(component_id=component_id, status="running")
             self._states[component_id] = state
-            self.logging.log("info", "DNS Manager applied preset", preset=preset)
+            self.logging.log("info", "DNS Manager applied DNS-over-HTTPS", source=source, doh=doh_url)
             return state
         except Exception as error:
             state = ComponentState(
@@ -1350,7 +1379,7 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
                 last_error=str(error),
             )
             self._states[component_id] = state
-            self.logging.log("error", "DNS Manager failed to apply preset", preset=preset, error=str(error))
+            self.logging.log("error", "DNS Manager failed to apply DNS-over-HTTPS", source=source, error=str(error))
             return state
 
     def _stop_dns_manager(self, component_id: str) -> ComponentState:

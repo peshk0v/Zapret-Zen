@@ -29,12 +29,17 @@ _CFPROXY_ENC: List[str] = [
     'clngqrflngqin.com',
     'tjacxbqtj.com',
     'bxaxtxmrw.com',
-    'dmohrsgmohcrwb.com'
+    'dmohrsgmohcrwb.com',
     'vwbmtmoi.com',
     'khgrre.com',
     'ulihssf.com',
     'tmhqsdqmfpmk.com',
-    'xwuwoqbm.com'
+    'xwuwoqbm.com',
+    'orgcnunpj.com',
+    'zhkuldz.com',
+    'zypoljnslxa.com',
+    'efabnxaowuzs.com',
+    'zaftuzsftqdq.com'
 ]
 _S = ''.join(chr(c) for c in (46, 99, 111, 46, 117, 107))
 
@@ -59,7 +64,7 @@ class ProxyConfig:
     port: int = 1443
     host: str = '127.0.0.1'
     secret: str = field(default_factory=lambda: os.urandom(16).hex())
-    dc_redirects: Dict[int, str] = field(default_factory=lambda: {2: '149.154.167.51', 4: '149.154.167.91'})
+    dc_redirects: Dict[int, str] = field(default_factory=lambda: {2: '149.154.167.220', 4: '149.154.167.220'})
     buffer_size: int = 256 * 1024
     pool_size: int = 4
     fallback_cfproxy: bool = True
@@ -67,6 +72,7 @@ class ProxyConfig:
     cfproxy_worker_domains: List[str] = field(default_factory=list)
     fake_tls_domain: str = ''
     proxy_protocol: bool = False
+    force_test_dc: bool = False
 
 
 proxy_config = ProxyConfig()
@@ -195,13 +201,19 @@ def parse_dc_ip_list(dc_ip_list: List[str]) -> Dict[int, str]:
     dc_redirects: Dict[int, str] = {}
     for entry in dc_ip_list:
         if ':' not in entry:
-            raise ValueError(
+            err = ValueError(
                 f"Invalid --dc-ip format {entry!r}, expected DC:IP")
+            err.entry = entry
+            err.kind = "format"
+            raise err
         dc_s, ip_s = entry.split(':', 1)
         try:
             dc_n = int(dc_s)
-            _socket.inet_aton(ip_s)
+            _socket.inet_pton(_socket.AF_INET, ip_s)
         except (ValueError, OSError):
-            raise ValueError(f"Invalid --dc-ip {entry!r}")
+            err = ValueError(f"Invalid --dc-ip {entry!r}")
+            err.entry = entry
+            err.kind = "invalid"
+            raise err from None
         dc_redirects[dc_n] = ip_s
     return dc_redirects
