@@ -18,6 +18,10 @@ from urllib.parse import quote, urlsplit, urlunsplit
 T = TypeVar("T")
 
 
+class DownloadCancelledError(Exception):
+    """Raised when the caller requests cancellation of an in-flight download."""
+
+
 def encode_url_path(url: str) -> str:
     parts = urlsplit(str(url or ""))
     if not parts.scheme or not parts.netloc:
@@ -99,11 +103,14 @@ class GitHubNetworkClient:
         purpose: str = "download",
         min_bytes: int = 1,
         progress_cb: Callable[[int, int, float | None], None] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> None:
         request = Request(encode_url_path(url), headers={"User-Agent": f"ZapretZen/{__version__}"})
         deadline = time.monotonic() + max(1, total_timeout)
         errors: list[str] = []
         for label, context in self._ssl_context_chain():
+            if is_cancelled is not None and is_cancelled():
+                raise DownloadCancelledError()
             try:
                 with urlopen(request, timeout=connect_timeout, context=context) as response:
                     self.logging.log("info", "Download started", url=url, ssl_path=label)
@@ -111,6 +118,8 @@ class GitHubNetworkClient:
                     received = 0
                     with destination.open("wb") as out:
                         while True:
+                            if is_cancelled is not None and is_cancelled():
+                                raise DownloadCancelledError()
                             if time.monotonic() > deadline:
                                 raise TimeoutError(f"Download timed out after {total_timeout} seconds")
                             chunk = response.read(65536)
@@ -125,6 +134,8 @@ class GitHubNetworkClient:
                 if destination.stat().st_size < max(1, min_bytes):
                     raise OSError("Downloaded archive is unexpectedly small")
                 return
+            except DownloadCancelledError:
+                raise
             except Exception as error:
                 errors.append(f"{label}: {error}")
                 if not self._is_certificate_error(error):
@@ -141,6 +152,7 @@ class GitHubNetworkClient:
         purpose: str = "github-download",
         min_bytes: int = 1,
         progress_cb: Callable[[int, int, float | None], None] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> None:
         self.download_stream(
             url,
@@ -151,6 +163,7 @@ class GitHubNetworkClient:
             purpose=purpose,
             min_bytes=min_bytes,
             progress_cb=progress_cb,
+            is_cancelled=is_cancelled,
         )
 
     @staticmethod

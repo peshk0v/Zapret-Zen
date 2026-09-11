@@ -4367,7 +4367,6 @@ class MainWindow(QMainWindow):
         self._services_count_label: QLabel | None = None
         self._services_grid: ServiceGridPanel | None = None
         self._services_scroll: QScrollArea | None = None
-        self._components_title_label: QLabel | None = None
         self._mods_title_label: QLabel | None = None
         self._mods_subtitle_label: QLabel | None = None
         self._mods_add_btn: QPushButton | None = None
@@ -6710,7 +6709,6 @@ class MainWindow(QMainWindow):
 
     def _build_components_page(self) -> QWidget:
         self._components_page = ComponentsPage(self)
-        self._components_title_label = self._components_page._title_label
         self._components_scroll = self._components_page._scroll
         self._components_cards_root = self._components_page._cards_root
         self._components_cards_layout = self._components_page._cards_layout
@@ -9939,8 +9937,6 @@ class MainWindow(QMainWindow):
                         "The app automatically adjusts its behavior to provide access to the selected services.",
                     )
                 )
-        if self._components_title_label is not None:
-            self._components_title_label.setText(self._t("Components"))
         if self._mods_title_label is not None:
             self._mods_title_label.setText(self._t("Mods"))
         if self._mods_subtitle_label is not None:
@@ -11265,6 +11261,7 @@ class MainWindow(QMainWindow):
         if self._update_prepare_dialog is not None:
             return
         self._update_prepare_cancelled = False
+        self._update_prepare_last_fraction = 0.0
         dialog = AppDialog(self, self.context, self._t("Preparing update"))
         label = QLabel(self._t("Preparing update from file..."))
         label.setWordWrap(True)
@@ -11281,7 +11278,8 @@ class MainWindow(QMainWindow):
         dialog.prepare_and_center()
         dialog.show()
         self._update_prepare_dialog = dialog
-        thread = threading.Thread(target=self._run_local_update_prepare_worker, args=(path,), daemon=True)
+        is_cancelled = lambda: self._update_prepare_cancelled
+        thread = threading.Thread(target=self._run_local_update_prepare_worker, args=(path,), kwargs={"is_cancelled": is_cancelled}, daemon=True)
         thread.start()
 
     def _check_updates_on_start(self) -> None:
@@ -11915,6 +11913,7 @@ class MainWindow(QMainWindow):
         if self._update_prepare_dialog is not None:
             return
         self._update_prepare_cancelled = False
+        self._update_prepare_last_fraction = 0.0
         dialog = AppDialog(self, self.context, self._t("Preparing update"))
         status_label = QLabel(self._update_status_text("download-github", ""))
         status_label.setWordWrap(True)
@@ -11944,11 +11943,10 @@ class MainWindow(QMainWindow):
 
     def _cancel_update_prepare(self, dialog: AppDialog) -> None:
         self._update_prepare_cancelled = True
-        dialog.reject()
-        self._update_prepare_dialog = None
-        self._update_prepare_status_label = None
-        self._update_prepare_detail_label = None
-        self._update_prepare_bar = None
+        try:
+            dialog.reject()
+        except Exception:
+            pass
 
     def _run_update_prepare_worker(self, release: dict[str, str]) -> None:
         def emit_progress(fraction: float | None, received: int, total: int, status: str, detail: str = "") -> None:
@@ -11957,7 +11955,11 @@ class MainWindow(QMainWindow):
             )
 
         try:
-            prepared = self.context.updates.prepare_update(release, progress=emit_progress)
+            prepared = self.context.updates.prepare_update(
+                release,
+                progress=emit_progress,
+                is_cancelled=lambda: self._update_prepare_cancelled,
+            )
             self._ui_signals.update_prepare_done.emit({"ok": True, "prepared": prepared})
         except Exception as error:
             self._ui_signals.update_prepare_done.emit({"ok": False, "error": str(error)})
@@ -11977,7 +11979,9 @@ class MainWindow(QMainWindow):
         if self._update_prepare_bar is not None:
             if isinstance(fraction, (int, float)) and fraction is not None:
                 self._update_prepare_bar.setRange(0, 100)
-                self._update_prepare_bar.setValue(int(round(max(0.0, min(1.0, float(fraction))) * 100)))
+                effective_fraction = max(float(fraction), getattr(self, "_update_prepare_last_fraction", 0.0))
+                self._update_prepare_last_fraction = effective_fraction
+                self._update_prepare_bar.setValue(int(round(max(0.0, min(1.0, effective_fraction)) * 100)))
             else:
                 self._update_prepare_bar.setRange(0, 0)
         if self._update_prepare_detail_label is not None:
@@ -12039,7 +12043,7 @@ class MainWindow(QMainWindow):
             )
         return self._t("Подготовка обновления...", "Preparing the update...")
 
-    def _run_local_update_prepare_worker(self, zip_path: str) -> None:
+    def _run_local_update_prepare_worker(self, zip_path: str, *, is_cancelled: Callable[[], bool] | None = None) -> None:
         try:
             prepared = self.context.updates.prepare_local_update(zip_path)
             self._ui_signals.update_prepare_done.emit({"ok": True, "prepared": prepared})
@@ -12049,6 +12053,11 @@ class MainWindow(QMainWindow):
     def _on_update_prepare_done(self, payload: object) -> None:
         if getattr(self, "_update_prepare_cancelled", False):
             self._update_prepare_cancelled = False
+            self._update_prepare_dialog = None
+            self._update_prepare_status_label = None
+            self._update_prepare_detail_label = None
+            self._update_prepare_bar = None
+            self._update_prepare_last_fraction = 0.0
             return
         if self._update_prepare_dialog is not None:
             self._update_prepare_dialog.accept()
@@ -12056,6 +12065,7 @@ class MainWindow(QMainWindow):
         self._update_prepare_status_label = None
         self._update_prepare_detail_label = None
         self._update_prepare_bar = None
+        self._update_prepare_last_fraction = 0.0
         if not isinstance(payload, dict) or not payload.get("ok"):
             message = str((payload or {}).get("error", self._t("Failed to prepare the update."))) if isinstance(payload, dict) else self._t("Failed to prepare the update.")
             self._toast_notification("error", self._t("Updates"), message)

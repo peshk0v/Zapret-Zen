@@ -48,6 +48,22 @@ def _set_windows_app_id() -> None:
         return
 
 
+def _configure_frozen_window_environment() -> None:
+    if not (is_packaged_runtime() and sys.platform.startswith("win")):
+        return
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # type: ignore[attr-defined]
+        _startup_trace("win: DPI awareness set to per-monitor")
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+    if not os.environ.get("QT_OPENGL"):
+        os.environ["QT_OPENGL"] = "software"
+        _startup_trace("win: forced QT_OPENGL=software for frozen build")
+
+
 def _is_admin_windows() -> bool:
     if not sys.platform.startswith("win"):
         return True
@@ -281,6 +297,7 @@ def run(argv: list[str] | None = None) -> int:
             return elevate_result
 
     _set_windows_app_id()
+    _configure_frozen_window_environment()
     _startup_trace("run: before QApplication")
     app = QApplication(sys.argv)
     _startup_trace("run: QApplication created")

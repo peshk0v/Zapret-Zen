@@ -7,7 +7,14 @@ on:
       - master
     tags:
       - '**'
+  release:
+    types: [published]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'GitHub release tag to upload (e.g. v2.6)'
+        required: true
+        type: string
 
 env:
   SF_USERNAME: peshk0v
@@ -31,3 +38,75 @@ jobs:
           git remote add sourceforge "ssh://$SF_USERNAME@git.code.sf.net/p/$SF_PROJECT/code"
           GIT_SSH_COMMAND="ssh -i $HOME/.ssh/sf_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes" \
             git push --force --prune sourceforge "refs/heads/*:refs/heads/*" "refs/tags/*:refs/tags/*"
+
+  upload-release:
+    if: >-
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' && inputs.tag != '')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            TAG="${{ github.event.release.tag_name }}"
+          else
+            TAG="${{ inputs.tag }}"
+          fi
+          # Strip exactly one leading 'v'
+          FOLDER=$(printf '%s' "$TAG" | sed -E 's/^v//')
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "folder=$FOLDER" >> "$GITHUB_OUTPUT"
+          echo "Resolved tag: $TAG → SourceForge folder: $FOLDER"
+
+      - name: Set up SSH key
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.SF_SSH_KEY }}" > ~/.ssh/sf_key
+          chmod 600 ~/.ssh/sf_key
+          ssh-keyscan -H -t rsa,ecdsa,ed25519 frs.sourceforge.net >> ~/.ssh/known_hosts
+          ssh-keyscan -H -t rsa,ecdsa,ed25519 git.code.sf.net >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p release-assets
+          gh release download "${{ steps.tag.outputs.tag }}" \
+            --repo "${{ github.repository }}" \
+            --dir release-assets \
+            --skip-existing
+          echo "Downloaded assets:"
+          ls -lh release-assets/ || { echo "No assets found for this release"; exit 1; }
+
+      - name: Upload assets to SourceForge
+        run: |
+          rsync -avP \
+            -e "ssh -i ~/.ssh/sf_key -o StrictHostKeyChecking=yes" \
+            ./release-assets/ \
+            "$SF_USERNAME@frs.sourceforge.net:/home/frs/project/$SF_PROJECT/${{ steps.tag.outputs.folder }}/"
+
+      - name: Set default downloads on SourceForge
+        if: env.SF_API_KEY != ''
+        env:
+          SF_API_KEY: ${{ secrets.SF_API_KEY }}
+        run: |
+          FOLDER="${{ steps.tag.outputs.folder }}"
+          curl -sS -f \
+            -H "Accept: application/json" \
+            -X PUT \
+            -d "default=windows&default=linux&default=mac" \
+            -d "api_key=${SF_API_KEY}" \
+            "https://sourceforge.net/projects/${SF_PROJECT}/files/${FOLDER}/" || {
+              echo "::warning::Failed to set default downloads via SourceForge API (non-fatal)"
+            }
+
+      - name: Summary
+        run: |
+          echo "## SourceForge Release Upload" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Tag | \`${{ steps.tag.outputs.tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| SourceForge folder | \`${{ steps.tag.outputs.folder }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Files uploaded | $(ls release-assets/ 2>/dev/null \| wc -l) |" >> "$GITHUB_STEP_SUMMARY"

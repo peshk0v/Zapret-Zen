@@ -19,7 +19,7 @@ from typing import Callable
 from zapret_zen import __version__
 from zapret_zen.domain import UpdateInfo
 from zapret_zen.runtime_env import is_packaged_runtime
-from zapret_zen.services.github_network import GitHubNetworkClient, is_github_rate_limit_error
+from zapret_zen.services.github_network import DownloadCancelledError, GitHubNetworkClient, is_github_rate_limit_error
 from zapret_zen.services.logging_service import LoggingManager
 from zapret_zen.services.storage import StorageManager
 _PS1_TEMPLATE = """\
@@ -65,16 +65,20 @@ function Add-UpdateLog([string]$message) {
   } catch {}
 }
 
+function Get-PythonRuntimeDlls([string]$dir) {
+  return @(Get-ChildItem -LiteralPath $dir -File -Force -Filter 'python3*.dll' -ErrorAction SilentlyContinue)
+}
+
 function Test-StandalonePayload([string]$sourceDir) {
-  return (Test-Path (Join-Path $sourceDir 'python311.dll')) -and
+  return (Test-Path (Join-Path $sourceDir 'zapret_zen.exe')) -and
          (Test-Path (Join-Path $sourceDir 'python3.dll')) -and
-         (Test-Path (Join-Path $sourceDir 'zapret_zen.exe'))
+         (@(Get-PythonRuntimeDlls $sourceDir).Count -gt 0)
 }
 
 function Test-InstalledStandalone([string]$targetDir) {
-  return (Test-Path (Join-Path $targetDir 'python311.dll')) -and
+  return (Test-Path (Join-Path $targetDir 'zapret_zen.exe')) -and
          (Test-Path (Join-Path $targetDir 'python3.dll')) -and
-         (Test-Path (Join-Path $targetDir 'zapret_zen.exe'))
+         (@(Get-PythonRuntimeDlls $targetDir).Count -gt 0)
 }
 
 function Overlay-Tree([string]$sourceDir, [string]$targetDir, [string[]]$preserveNames) {
@@ -87,7 +91,9 @@ function Overlay-Tree([string]$sourceDir, [string]$targetDir, [string[]]$preserv
   Get-ChildItem -LiteralPath $targetDir -Force -ErrorAction SilentlyContinue | ForEach-Object {
     if ($preserveNames -contains $_.Name) { return }
     if (-not $sourceNames.ContainsKey($_.Name)) {
-      [void](Remove-PathRobust $_.FullName)
+      if (-not (Remove-PathRobust $_.FullName)) {
+        Add-UpdateLog ('stale item NOT removed from target: ' + $_.FullName)
+      }
     }
   }
   foreach ($item in $sourceItems) {
@@ -97,7 +103,9 @@ function Overlay-Tree([string]$sourceDir, [string]$targetDir, [string[]]$preserv
       Overlay-Tree $item.FullName $dest $preserveNames
     } else {
       if (Test-Path $dest) {
-        [void](Remove-PathRobust $dest)
+        if (-not (Remove-PathRobust $dest)) {
+          Add-UpdateLog ('could not replace existing item, attempting overwrite: ' + $dest)
+        }
       }
       New-Item -ItemType Directory -Path (Split-Path $dest -Parent) -Force | Out-Null
       try {
@@ -146,8 +154,18 @@ if ($sourceIsStandalone) {
   Add-UpdateLog 'standalone payload detected'
   $oldInternal = Join-Path $dst '_internal'
   if (Test-Path $oldInternal) {
-    [void](Remove-PathRobust $oldInternal)
-    Add-UpdateLog 'old _internal removed for standalone update'
+    if (Remove-PathRobust $oldInternal) {
+      Add-UpdateLog 'old _internal removed for standalone update'
+    } else {
+      Add-UpdateLog 'WARNING: old _internal could not be fully removed; overlay will merge leftover files'
+    }
+  }
+} else {
+  $oldInternal = Join-Path $dst '_internal'
+  if ((Test-Path $oldInternal) -and -not (Test-Path (Join-Path $src '_internal'))) {
+    if (Remove-PathRobust $oldInternal) {
+      Add-UpdateLog 'stale _internal removed (new payload has no _internal)'
+    }
   }
 }
 
@@ -156,7 +174,8 @@ Add-Content -LiteralPath $logPath -Value ('[' + (Get-Date -Format s) + '] payloa
 
 if ($sourceIsStandalone -and -not (Test-InstalledStandalone $dst)) {
   Add-UpdateLog 'standalone validation failed after overlay, retrying top-level runtime files'
-  foreach ($fileName in @('zapret_zen.exe', 'python311.dll', 'python3.dll')) {
+  $runtimeFiles = @('zapret_zen.exe', 'python3.dll') + @(Get-PythonRuntimeDlls $src | ForEach-Object { $_.Name })
+  foreach ($fileName in $runtimeFiles) {
     $sourceFile = Join-Path $src $fileName
     $targetFile = Join-Path $dst $fileName
     if (Test-Path $sourceFile) {
@@ -191,14 +210,24 @@ if ($sourceIsStandalone -and -not (Test-InstalledStandalone $dst)) {
 }
 
 Start-Sleep -Milliseconds 400
+
+$qpaPlugin = Get-ChildItem -LiteralPath $dst -File -Recurse -ErrorAction SilentlyContinue |
+             Where-Object { $_.DirectoryName -match '\\platforms$' -and $_.Name -eq 'qwindows.dll' } |
+             Select-Object -First 1
+if (-not $qpaPlugin) {
+  Add-UpdateLog 'ERROR: Qt Windows platform plugin (platforms/qwindows.dll) missing after update'
+  Start-Process -FilePath (Join-Path $dst 'zapret_zen.exe') -WorkingDirectory $dst
+  exit 3
+}
+Add-UpdateLog ('Qt platform plugin found: ' + $qpaPlugin.FullName)
+
 $launch = Join-Path $dst 'zapret_zen.exe'
 Start-Process -FilePath $launch -WorkingDirectory $dst
 Add-Content -LiteralPath $logPath -Value ('[' + (Get-Date -Format s) + '] relaunched app')
 Remove-Item $backupRoot -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
 Start-Sleep -Milliseconds 500
-Remove-Item '{{SELF_DELETE}}' -Force -ErrorAction SilentlyContinue
-"""
+Remove-Item '{{SELF_DELETE}}' -Force -ErrorAction SilentlyContinue"""
 
 
 class UpdatesManager:
@@ -210,8 +239,8 @@ class UpdatesManager:
     _CACHE_FILE = "app_update_check.json"
     _CACHE_TTL_SECONDS = 3600
     _METADATA_TIMEOUT = 8
-    _DOWNLOAD_CONNECT_TIMEOUT = 10
-    _DOWNLOAD_READ_TIMEOUT = 12
+    _DOWNLOAD_CONNECT_TIMEOUT = 15
+    _DOWNLOAD_READ_TIMEOUT = 20
     _DOWNLOAD_BUDGET = 120
 
     def __init__(self, storage: StorageManager, logging: LoggingManager, *, processes: object | None = None) -> None:
@@ -629,6 +658,8 @@ class UpdatesManager:
         self,
         release_info: dict[str, str],
         progress: Callable[[float | None, int, int, str, str], None] | None = None,
+        *,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> dict[str, str]:
         asset_url = str(release_info.get("asset_url") or "").strip()
         asset_name = str(release_info.get("asset_name") or "").strip() or self._default_asset_name()
@@ -638,8 +669,8 @@ class UpdatesManager:
         temp_root = Path(tempfile.mkdtemp(prefix="zapret_zen_update_"))
         try:
             zip_path = temp_root / asset_name
-            self._download_update_asset(release_info, zip_path, progress)
-            return self._extract_update_package(zip_path, temp_root, release_info, progress=progress)
+            self._download_update_asset(release_info, zip_path, progress, is_cancelled=is_cancelled)
+            return self._extract_update_package(zip_path, temp_root, release_info, progress=progress, is_cancelled=is_cancelled)
         except Exception:
             shutil.rmtree(temp_root, ignore_errors=True)
             raise
@@ -649,7 +680,13 @@ class UpdatesManager:
         release_info: dict[str, str],
         destination: Path,
         progress: Callable[[float | None, int, int, str, str], None] | None,
+        *,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> None:
+        def _check_cancelled() -> None:
+            if is_cancelled is not None and is_cancelled():
+                raise DownloadCancelledError()
+
         asset_url = str(release_info.get("asset_url") or "").strip()
         asset_name = str(release_info.get("asset_name") or "").strip() or self._default_asset_name()
         sf_url = self._build_sourceforge_asset_url(asset_name)
@@ -659,46 +696,58 @@ class UpdatesManager:
 
         if asset_url and not prefer_sourceforge:
             try:
+                _check_cancelled()
                 if progress is not None:
                     progress(None, 0, 0, "download-github", "")
-                self._download_with_progress(asset_url, destination, progress, "download-github")
+                self._download_with_progress(asset_url, destination, progress, "download-github", is_cancelled=is_cancelled)
                 return
+            except DownloadCancelledError:
+                raise
             except Exception as error:
                 errors.append(f"github: {error}")
                 self.logging.log("warning", "App update GitHub download failed", error=str(error))
             if self._domain_bypass is not None:
                 try:
+                    _check_cancelled()
                     if progress is not None:
                         progress(None, 0, 0, "download-zapret", ",".join(github_domains))
                     self._domain_bypass(
                         github_domains,
-                        lambda: self._download_with_progress(asset_url, destination, progress, "download-github"),
+                        lambda: self._download_with_progress(asset_url, destination, progress, "download-github", is_cancelled=is_cancelled),
                         "app-update-download",
                     )
                     return
+                except DownloadCancelledError:
+                    raise
                 except Exception as error:
                     errors.append(f"github-zapret: {error}")
                     self.logging.log("warning", "App update download via Zapret+GitHub failed", error=str(error))
 
         if sf_url:
             try:
+                _check_cancelled()
                 if progress is not None:
                     progress(None, 0, 0, "download-sourceforge", "")
-                self._download_with_progress(sf_url, destination, progress, "download-sourceforge")
+                self._download_with_progress(sf_url, destination, progress, "download-sourceforge", is_cancelled=is_cancelled)
                 return
+            except DownloadCancelledError:
+                raise
             except Exception as error:
                 errors.append(f"sourceforge: {error}")
                 self.logging.log("warning", "App update SourceForge download failed", error=str(error))
             if self._domain_bypass is not None:
                 try:
+                    _check_cancelled()
                     if progress is not None:
                         progress(None, 0, 0, "download-zapret", "sourceforge.net")
                     self._domain_bypass(
                         ("sourceforge.net",),
-                        lambda: self._download_with_progress(sf_url, destination, progress, "download-sourceforge"),
+                        lambda: self._download_with_progress(sf_url, destination, progress, "download-sourceforge", is_cancelled=is_cancelled),
                         "app-update-download",
                     )
                     return
+                except DownloadCancelledError:
+                    raise
                 except Exception as error:
                     errors.append(f"sourceforge-zapret: {error}")
                     self.logging.log("warning", "App update download via Zapret+SourceForge failed", error=str(error))
@@ -711,6 +760,8 @@ class UpdatesManager:
         destination: Path,
         progress: Callable[[float | None, int, int, str, str], None] | None,
         status_token: str,
+        *,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> None:
         def on_bytes(received: int, total: int, fraction: float | None) -> None:
             if progress is not None:
@@ -725,6 +776,7 @@ class UpdatesManager:
             purpose="app-update-download",
             min_bytes=1,
             progress_cb=on_bytes if progress is not None else None,
+            is_cancelled=is_cancelled,
         )
 
     def prepare_local_update(self, zip_path: str) -> dict[str, str]:
@@ -745,7 +797,10 @@ class UpdatesManager:
         temp_root: Path,
         release_info: dict[str, str],
         progress: Callable[[float | None, int, int, str, str], None] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> dict[str, str]:
+        if is_cancelled is not None and is_cancelled():
+            raise DownloadCancelledError()
         if progress is not None:
             progress(0.0, 0, 0, "extract", "")
         extract_root = temp_root / "payload"

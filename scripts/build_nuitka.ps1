@@ -111,6 +111,14 @@ if (Test-Path $runtimeTarget) {
 }
 Copy-Item $runtimeStage $runtimeTarget -Recurse -Force
 
+$qpaPlugin = Get-ChildItem $distDir.FullName -Recurse -File -Filter 'qwindows.dll' -ErrorAction SilentlyContinue |
+    Where-Object { $_.DirectoryName -match '\\platforms$' } |
+    Select-Object -First 1
+if (-not $qpaPlugin) {
+    throw "Qt Windows platform plugin (platforms\qwindows.dll) missing in Nuitka output; the translucent window would not composite correctly"
+}
+Write-Host "Qt Windows platform plugin present at: $($qpaPlugin.FullName)"
+
 if (Test-Path $stagingRoot) {
     Remove-Item $stagingRoot -Recurse -Force
 }
