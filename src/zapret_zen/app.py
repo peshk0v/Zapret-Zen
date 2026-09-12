@@ -330,12 +330,45 @@ def run(argv: list[str] | None = None) -> int:
     parser.add_argument("--uninstall", action="store_true")
     parser.add_argument("--install-dir", default="")
     parser.add_argument("--silent", action="store_true")
+    parser.add_argument("--diagnose-window", action="store_true")
     from zapret_zen.cli_args import build_worker_arg_group
     build_worker_arg_group(parser)
     known, _ = parser.parse_known_args(runtime_argv)
 
     if known.uninstall:
         return _run_uninstall(known.install_dir, known.silent)
+
+    if known.diagnose_window:
+        _startup_trace("run: diagnose-window start")
+        _set_windows_app_id()
+        _configure_frozen_window_environment()
+        _self_heal_windows_install()
+        app = QApplication(sys.argv)
+        app.setApplicationName("Zapret-Zen")
+        app.setOrganizationName("ZapretZen")
+        _startup_trace("run: diagnose-window bootstrap")
+        from zapret_zen.bootstrap import bootstrap_application
+        from zapret_zen.ui.main_window import MainWindow
+        from zapret_zen.window_diagnose import run_diagnose
+        context = bootstrap_application()
+        window = MainWindow(
+            context,
+            launch_hidden=False,
+            startup_show_onboarding=False,
+            startup_snapshot=None,
+            skip_autosettings=True,
+        )
+        window.show()
+        window.raise_()
+        from PySide6.QtCore import QEventLoop
+        settle_loop = QEventLoop()
+        QTimer.singleShot(2500, settle_loop.quit)
+        settle_loop.exec()
+        target = Path(os.environ.get("TEMP", ".")) / "zapret_zen_window_diagnose.txt"
+        code = run_diagnose(app, window, output=target)
+        _startup_trace(f"run: diagnose-window wrote {target}")
+        sys.stdout.flush()
+        os._exit(code)
 
     if known.worker == "tg-ws-proxy":
         _startup_trace("run: worker=tg-ws-proxy")

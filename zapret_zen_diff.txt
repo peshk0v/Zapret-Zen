@@ -1,0 +1,19 @@
+﻿== Zapret-Zen install diff ==
+clean:   <clean install>
+updated: <broken updated install>
+mode: SHA256 file hashes
+
+scanning...
+clean files:   0
+updated files: 0
+
+== ONLY IN UPDATED (stale survivers - CULPRIT CANDIDATES) ==
+count: 0
+
+== ONLY IN CLEAN (files the update removed) ==
+count: 0
+
+== CHANGED (same path, different content) ==
+count: 0
+
+== SUMMARY (top-level component participation) ==
