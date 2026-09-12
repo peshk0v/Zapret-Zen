@@ -31,8 +31,6 @@ $launch = '{{LAUNCH}}'
 $tempRoot = '{{TEMP_ROOT}}'
 $logPath = '{{LOG_PATH}}'
 $preserve = @('data', 'mods', 'configs', 'cache', 'logs', 'backups')
-$backupRoot = Join-Path '{{SCRIPT_ROOT}}' ('preserve_' + [guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
 Add-Content -LiteralPath $logPath -Value ('[' + (Get-Date -Format s) + '] updater started')
 
 function Remove-PathRobust([string]$targetPath) {
@@ -81,38 +79,30 @@ function Test-InstalledStandalone([string]$targetDir) {
          (@(Get-PythonRuntimeDlls $targetDir).Count -gt 0)
 }
 
-function Overlay-Tree([string]$sourceDir, [string]$targetDir, [string[]]$preserveNames) {
+function Is-Preserved([string]$name) {
+  if ($preserve -contains $name) { return $true }
+  return $name.StartsWith('unins000')
+}
+
+function Clean-Replace([string]$sourceDir, [string]$targetDir) {
   New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
-  $sourceItems = Get-ChildItem -LiteralPath $sourceDir -Force -ErrorAction SilentlyContinue
-  $sourceNames = @{}
-  foreach ($item in $sourceItems) {
-    $sourceNames[$item.Name] = $true
-  }
   Get-ChildItem -LiteralPath $targetDir -Force -ErrorAction SilentlyContinue | ForEach-Object {
-    if ($preserveNames -contains $_.Name) { return }
-    if (-not $sourceNames.ContainsKey($_.Name)) {
-      if (-not (Remove-PathRobust $_.FullName)) {
-        Add-UpdateLog ('stale item NOT removed from target: ' + $_.FullName)
-      }
+    if (Is-Preserved $_.Name) { return }
+    if (-not (Remove-PathRobust $_.FullName)) {
+      Add-UpdateLog ('stale item NOT removed from target: ' + $_.FullName)
     }
   }
-  foreach ($item in $sourceItems) {
-    if ($preserveNames -contains $item.Name) { continue }
-    $dest = Join-Path $targetDir $item.Name
-    if ($item.PSIsContainer) {
-      Overlay-Tree $item.FullName $dest $preserveNames
-    } else {
-      if (Test-Path $dest) {
-        if (-not (Remove-PathRobust $dest)) {
-          Add-UpdateLog ('could not replace existing item, attempting overwrite: ' + $dest)
-        }
+  Get-ChildItem -LiteralPath $sourceDir -Force -ErrorAction SilentlyContinue | ForEach-Object {
+    if (Is-Preserved $_.Name) { return }
+    $dest = Join-Path $targetDir $_.Name
+    try {
+      if ($_.PSIsContainer) {
+        Copy-Item $_.FullName $dest -Recurse -Force -ErrorAction Stop
+      } else {
+        Copy-Item $_.FullName $dest -Force -ErrorAction Stop
       }
-      New-Item -ItemType Directory -Path (Split-Path $dest -Parent) -Force | Out-Null
-      try {
-        Copy-Item $item.FullName $dest -Force -ErrorAction Stop
-      } catch {
-        Add-UpdateLog ('copy failed: ' + $item.FullName + ' -> ' + $dest + ' | ' + $_.Exception.Message)
-      }
+    } catch {
+      Add-UpdateLog ('copy failed: ' + $_.FullName + ' -> ' + $dest + ' | ' + $_.Exception.Message)
     }
   }
 }
@@ -138,71 +128,44 @@ foreach ($image in @('zapret_zen.exe', 'TgWsProxy_windows.exe', 'winws.exe')) {
 }
 
 New-Item -ItemType Directory -Path $dst -Force | Out-Null
-
-foreach ($item in $preserve) {
-  $dstItem = Join-Path $dst $item
-  try {
-    if (Test-Path $dstItem) {
-      Move-Item $dstItem (Join-Path $backupRoot $item) -Force
-    }
-  } catch {}
-}
-Add-Content -LiteralPath $logPath -Value ('[' + (Get-Date -Format s) + '] preserved user dirs')
+Add-UpdateLog ('preserved items are kept in place: ' + (($preserve + @('unins000.*')) -join ', '))
 
 $sourceIsStandalone = Test-StandalonePayload $src
 if ($sourceIsStandalone) {
-  Add-UpdateLog 'standalone payload detected'
-  $oldInternal = Join-Path $dst '_internal'
-  if (Test-Path $oldInternal) {
-    if (Remove-PathRobust $oldInternal) {
-      Add-UpdateLog 'old _internal removed for standalone update'
-    } else {
-      Add-UpdateLog 'WARNING: old _internal could not be fully removed; overlay will merge leftover files'
-    }
-  }
+  Add-UpdateLog 'standalone payload detected: performing full clean replacement of the install directory'
 } else {
-  $oldInternal = Join-Path $dst '_internal'
-  if ((Test-Path $oldInternal) -and -not (Test-Path (Join-Path $src '_internal'))) {
-    if (Remove-PathRobust $oldInternal) {
-      Add-UpdateLog 'stale _internal removed (new payload has no _internal)'
-    }
-  }
+  Add-UpdateLog 'payload not recognized as standalone; still performing full clean replacement'
 }
 
-Overlay-Tree $src $dst $preserve
-Add-Content -LiteralPath $logPath -Value ('[' + (Get-Date -Format s) + '] payload copied')
+Clean-Replace $src $dst
+Add-UpdateLog 'install directory fully replaced (old runtime files removed, new payload copied)'
+
+$runtimeRetry = @('_internal')
+$runtimeRetry += @('zapret_zen.exe', 'python3.dll')
+$runtimeRetry += @(Get-PythonRuntimeDlls $src | ForEach-Object { $_.Name })
 
 if ($sourceIsStandalone -and -not (Test-InstalledStandalone $dst)) {
-  Add-UpdateLog 'standalone validation failed after overlay, retrying top-level runtime files'
-  $runtimeFiles = @('zapret_zen.exe', 'python3.dll') + @(Get-PythonRuntimeDlls $src | ForEach-Object { $_.Name })
-  foreach ($fileName in $runtimeFiles) {
+  Add-UpdateLog 'standalone validation failed after clean replace, retrying top-level runtime files'
+  foreach ($fileName in $runtimeRetry) {
     $sourceFile = Join-Path $src $fileName
     $targetFile = Join-Path $dst $fileName
     if (Test-Path $sourceFile) {
       [void](Remove-PathRobust $targetFile)
       try {
-        Copy-Item $sourceFile $targetFile -Force -ErrorAction Stop
-        Add-UpdateLog ('runtime file copied: ' + $fileName)
+        if (Test-Path $sourceFile -PathType Container) {
+          New-Item -ItemType Directory -Path $targetFile -Force | Out-Null
+          Copy-Item (Join-Path $sourceFile '*') $targetFile -Recurse -Force -ErrorAction Stop
+        } else {
+          New-Item -ItemType Directory -Path (Split-Path $targetFile -Parent) -Force | Out-Null
+          Copy-Item $sourceFile $targetFile -Force -ErrorAction Stop
+        }
+        Add-UpdateLog ('runtime item copied: ' + $fileName)
       } catch {
-        Add-UpdateLog ('runtime file copy failed: ' + $fileName + ' | ' + $_.Exception.Message)
+        Add-UpdateLog ('runtime item copy failed: ' + $fileName + ' | ' + $_.Exception.Message)
       }
     }
   }
 }
-
-foreach ($item in $preserve) {
-  $backupItem = Join-Path $backupRoot $item
-  $target = Join-Path $dst $item
-  if (Test-Path $backupItem) {
-    try {
-      if (Test-Path $target) {
-        [void](Remove-PathRobust $target)
-      }
-    } catch {}
-    Move-Item $backupItem $target -Force
-  }
-}
-Add-Content -LiteralPath $logPath -Value ('[' + (Get-Date -Format s) + '] user data restored')
 
 if ($sourceIsStandalone -and -not (Test-InstalledStandalone $dst)) {
   Add-UpdateLog 'standalone validation failed, aborting relaunch to avoid broken install'
@@ -212,7 +175,7 @@ if ($sourceIsStandalone -and -not (Test-InstalledStandalone $dst)) {
 Start-Sleep -Milliseconds 400
 
 $qpaPlugin = Get-ChildItem -LiteralPath $dst -File -Recurse -ErrorAction SilentlyContinue |
-             Where-Object { $_.DirectoryName -match '\\platforms$' -and $_.Name -eq 'qwindows.dll' } |
+             Where-Object { $_.Name -eq 'qwindows.dll' -and (Split-Path $_.DirectoryName -Leaf) -eq 'platforms' } |
              Select-Object -First 1
 if (-not $qpaPlugin) {
   Add-UpdateLog 'ERROR: Qt Windows platform plugin (platforms/qwindows.dll) missing after update'
@@ -224,7 +187,6 @@ Add-UpdateLog ('Qt platform plugin found: ' + $qpaPlugin.FullName)
 $launch = Join-Path $dst 'zapret_zen.exe'
 Start-Process -FilePath $launch -WorkingDirectory $dst
 Add-Content -LiteralPath $logPath -Value ('[' + (Get-Date -Format s) + '] relaunched app')
-Remove-Item $backupRoot -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
 Start-Sleep -Milliseconds 500
 Remove-Item '{{SELF_DELETE}}' -Force -ErrorAction SilentlyContinue"""

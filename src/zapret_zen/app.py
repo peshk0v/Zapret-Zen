@@ -64,6 +64,61 @@ def _configure_frozen_window_environment() -> None:
         _startup_trace("win: forced QT_OPENGL=software for frozen build")
 
 
+def _expected_python_dll_name() -> str:
+    return f"python{sys.version_info.major}{sys.version_info.minor}.dll"
+
+
+def _uninstall_registry_keys() -> list[tuple[int, str]]:
+    return [
+        (winreg.HKEY_LOCAL_MACHINE, _INNO_UNINSTALL_KEY),
+        (winreg.HKEY_CURRENT_USER, _INNO_UNINSTALL_KEY),
+        (winreg.HKEY_LOCAL_MACHINE, _LEGACY_UNINSTALL_KEY),
+        (winreg.HKEY_CURRENT_USER, _LEGACY_UNINSTALL_KEY),
+    ]
+
+
+def _self_heal_windows_install() -> None:
+    if not (is_packaged_runtime() and sys.platform.startswith("win")):
+        return
+    install_dir = packaged_install_root()
+    try:
+        if install_dir.is_dir():
+            expected = _expected_python_dll_name()
+            stale_dlls = [item for item in install_dir.glob("python3*.dll") if item.name.lower() != expected.lower()]
+            if stale_dlls:
+                bat = Path(tempfile.gettempdir()) / "zapret_zen_stale_runtime_cleanup.bat"
+                lines = ["@echo off", "ping 127.0.0.1 -n 4 > nul"]
+                for dll in stale_dlls:
+                    lines.append(f'del /f /q "{dll}"')
+                lines.append(f'del /f /q "{bat}"')
+                bat.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
+                subprocess.Popen(["cmd", "/c", str(bat)], creationflags=subprocess.CREATE_NO_WINDOW)
+                _startup_trace("win: self-heal queued removal of stale python dlls: " + ", ".join(item.name for item in stale_dlls))
+
+        inno_uninstaller = install_dir / "unins000.exe"
+        if not inno_uninstaller.exists():
+            exe = install_dir / "zapret_zen.exe"
+            if exe.exists():
+                uninstall_string = f'"{exe}" --uninstall --install-dir "{install_dir}"'
+                quiet_string = f'{uninstall_string} --silent'
+                repointed = False
+                for hive, subkey in _uninstall_registry_keys():
+                    try:
+                        with winreg.OpenKey(hive, subkey, 0, winreg.KEY_SET_VALUE) as key:
+                            winreg.SetValueEx(key, "UninstallString", 0, winreg.REG_SZ, uninstall_string)
+                            winreg.SetValueEx(key, "QuietUninstallString", 0, winreg.REG_SZ, quiet_string)
+                            winreg.SetValueEx(key, "DisplayIcon", 0, winreg.REG_SZ, f'"{exe}",0')
+                            repointed = True
+                    except OSError:
+                        continue
+                if repointed:
+                    _startup_trace("win: self-heal re-pointed uninstall registry entry to built-in uninstaller (unins000.exe missing)")
+                else:
+                    _startup_trace("win: self-heal: unins000.exe missing and no uninstall registry entry found")
+    except Exception as error:
+        _startup_trace(f"win: self-heal failed: {error}")
+
+
 def _is_admin_windows() -> bool:
     if not sys.platform.startswith("win"):
         return True
@@ -241,8 +296,18 @@ def _run_uninstall(install_dir_arg: str, silent: bool = False) -> int:
         subprocess.Popen(args)
         return 0
 
-    # fallback: delete the install dir via a delayed batch script
-    cmd = f"@echo off\r\nping 127.0.0.1 -n 4 > nul\r\nrmdir /s /q \"{install_dir}\"\r\n"
+    # fallback: delete the install dir via a delayed batch script and drop registry entries
+    reg_delete_lines = []
+    for hive, subkey in _uninstall_registry_keys():
+        hive_path = "HKLM" if hive == winreg.HKEY_LOCAL_MACHINE else "HKCU"
+        reg_delete_lines.append(f'reg delete "{hive_path}\\{subkey}" /f')
+    cmd = (
+        "@echo off\r\n"
+        "ping 127.0.0.1 -n 4 > nul\r\n"
+        f'rmdir /s /q "{install_dir}"\r\n'
+        + "\r\n".join(reg_delete_lines)
+        + "\r\n"
+    )
     bat = Path(tempfile.gettempdir()) / "zapret_zen_cleanup.bat"
     bat.write_text(cmd, encoding="utf-8")
     subprocess.Popen(["cmd", "/c", str(bat)], creationflags=subprocess.CREATE_NO_WINDOW)
@@ -252,6 +317,11 @@ def _run_uninstall(install_dir_arg: str, silent: bool = False) -> int:
 def run(argv: list[str] | None = None) -> int:
     multiprocessing.freeze_support()
     _startup_trace("run: freeze_support passed")
+    try:
+        from zapret_zen import __version__
+        _startup_trace(f"run: version={__version__}")
+    except Exception:
+        pass
     runtime_argv = list(argv if argv is not None else sys.argv[1:])
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--worker", choices=["tg-ws-proxy"], default="")
@@ -298,6 +368,7 @@ def run(argv: list[str] | None = None) -> int:
 
     _set_windows_app_id()
     _configure_frozen_window_environment()
+    _self_heal_windows_install()
     _startup_trace("run: before QApplication")
     app = QApplication(sys.argv)
     _startup_trace("run: QApplication created")
