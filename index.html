@@ -37,6 +37,13 @@
             --outline: #73777f;
             --shadow: rgba(0, 0, 0, 0.06);
             --card-radius: 28px;
+
+            /* Синий header для светлой темы */
+            --header-bg: rgba(33, 66, 110, 0.88);
+            --header-border: rgba(255, 255, 255, 0.15);
+            --header-text: #ffffff;
+            --header-text-muted: rgba(255, 255, 255, 0.85);
+            --header-hover: #a3c9fe;
         }
 
         @media (prefers-color-scheme: dark) {
@@ -52,11 +59,18 @@
                 --on-primary: #00315b;
                 --primary-container: #214873;
                 --on-primary-container: #d6e3ff;
-                
+
                 --success: #81c995;
                 --on-success: #003314;
 
                 --shadow: rgba(0, 0, 0, 0.3);
+
+                /* Глубокий тёмно-синий header для тёмной темы */
+                --header-bg: rgba(18, 30, 48, 0.88);
+                --header-border: rgba(255, 255, 255, 0.1);
+                --header-text: #ffffff;
+                --header-text-muted: rgba(224, 226, 236, 0.8);
+                --header-hover: #a3c9fe;
             }
         }
 
@@ -119,8 +133,9 @@
             z-index: 100;
             backdrop-filter: blur(16px);
             -webkit-backdrop-filter: blur(16px);
-            background: rgba(14, 19, 25, 0.5);
-            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            background: var(--header-bg);
+            border-bottom: 1px solid var(--header-border);
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
             animation: fadeInDown 0.8s ease-out;
         }
 
@@ -143,7 +158,7 @@
             align-items: center;
             gap: 12px;
             text-decoration: none;
-            color: var(--on-surface);
+            color: var(--header-text);
             transition: transform 0.3s ease;
         }
 
@@ -171,14 +186,14 @@
         }
 
         .nav-links a {
-            color: var(--on-surface-variant);
+            color: var(--header-text-muted);
             text-decoration: none;
             font-weight: 500;
             transition: color 0.2s;
         }
 
         .nav-links a:hover {
-            color: var(--primary);
+            color: var(--header-hover);
         }
 
         .btn {
@@ -216,6 +231,20 @@
         .btn-tonal:hover {
             background-color: var(--surface-variant);
             transform: translateY(-3px);
+        }
+
+        /* Светлая кнопка в хедере поверх синего фона */
+        header .btn-header {
+            background-color: rgba(255, 255, 255, 0.15);
+            color: #ffffff;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            backdrop-filter: blur(4px);
+        }
+
+        header .btn-header:hover {
+            background-color: #ffffff;
+            color: var(--on-primary-container);
+            transform: translateY(-2px);
         }
 
         .dropdown {
@@ -356,7 +385,7 @@
             display: block;
             transform: translateZ(20px);
             filter: drop-shadow(0 24px 48px var(--shadow));
-            border-radius: 12px;
+            border-radius: 16px;
         }
 
         .features {
@@ -449,7 +478,7 @@
             height: auto;
             border: none;
             background: transparent;
-            border-radius: 10px;
+            border-radius: 16px;
             margin-bottom: 1.5rem;
             box-shadow: 0 8px 24px rgba(0,0,0,0.15);
             display: block;
@@ -663,7 +692,7 @@
             justify-content: center;
             color: var(--on-surface);
         }
-        
+
         .recommended .mirror-icon {
             background: var(--success);
             color: var(--on-success);
@@ -728,7 +757,7 @@
             text-decoration: none;
             transition: color 0.2s;
         }
-        
+
         footer a:hover {
             color: var(--on-primary-container);
         }
@@ -753,7 +782,7 @@
                 <li><a href="#download">Скачать</a></li>
                 <li><a href="https://github.com/peshk0v/Zapret-Zen/wiki" target="_blank">Wiki</a></li>
             </ul>
-            <a href="https://github.com/peshk0v/Zapret-Zen" target="_blank" class="btn btn-tonal">
+            <a href="https://github.com/peshk0v/Zapret-Zen" target="_blank" class="btn btn-header">
                 <span class="material-symbols-outlined">code</span>
                 GitHub
             </a>
@@ -764,7 +793,7 @@
         <img src="ds_icon.png" alt="Zapret Zen Icon" class="hero-banner">
         <h1>Zapret Zen</h1>
         <p>Удобная и быстрая утилита для обхода блокировок на Windows в дизайне Material You. Поддержка пресетов, модов и умной автонастройки.</p>
-        
+
         <div class="hero-cta">
             <a href="#download" class="btn btn-primary">
                 <span class="material-symbols-outlined">download</span>
@@ -856,7 +885,7 @@
                         <li>Запустите файл <code>zapret_zen.exe</code>.</li>
                     </ol>
                 </div>
-                
+
                 <div class="dropdown" id="portable-dropdown">
                     <button class="btn btn-primary dropdown-toggle">
                         <span class="material-symbols-outlined">folder_zip</span>
@@ -918,7 +947,7 @@
                 <h3>Загрузка файла</h3>
                 <p>Выберите наиболее быстрое зеркало для вашего региона.</p>
             </div>
-            
+
             <div class="mirrors-grid">
                 <a id="link-gh" href="#" target="_blank" class="mirror-card" onclick="closeMirrorModal()">
                     <div class="badge-recommended">Рекомендовано</div>
@@ -959,7 +988,7 @@
 
     <script>
         let latestReleaseTag = '';
-        
+
         const releaseFiles = {
             installer: { githubUrl: '', filename: '' },
             x64: { githubUrl: '', filename: '' },
@@ -1009,9 +1038,9 @@
                 const response = await fetch('https://api.github.com/repos/peshk0v/Zapret-Zen/releases/latest');
                 if (!response.ok) return;
                 const releaseData = await response.json();
-                
+
                 latestReleaseTag = releaseData.tag_name;
-                
+
                 const versionBadge = document.getElementById('latest-version-badge');
                 if (versionBadge && latestReleaseTag) {
                     versionBadge.textContent = `(${latestReleaseTag})`;
@@ -1039,7 +1068,7 @@
                 const start = performance.now();
                 const img = new Image();
                 const timeout = setTimeout(() => resolve(9999), 3000);
-                
+
                 img.onload = img.onerror = () => {
                     clearTimeout(timeout);
                     resolve(Math.round(performance.now() - start));
@@ -1051,7 +1080,7 @@
         async function openMirrorModal(type) {
             const modal = document.getElementById('mirror-modal');
             const fileData = releaseFiles[type];
-            
+
             if (!fileData || !fileData.filename) {
                 window.open('https://github.com/peshk0v/Zapret-Zen/releases/latest', '_blank');
                 return;
@@ -1064,12 +1093,12 @@
 
             ghLink.classList.remove('recommended');
             sfLink.classList.remove('recommended');
-            
+
             ghPingText.innerHTML = `<span class="material-symbols-outlined ping-loading">sync</span> измеряем...`;
             sfPingText.innerHTML = `<span class="material-symbols-outlined ping-loading">sync</span> измеряем...`;
 
             ghLink.href = fileData.githubUrl;
-            
+
             sfLink.href = `https://sourceforge.net/projects/zapret-zen/files/${encodeURIComponent(latestReleaseTag)}/${encodeURIComponent(fileData.filename)}/download`;
 
             modal.classList.add('active');
