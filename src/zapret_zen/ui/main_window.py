@@ -939,10 +939,10 @@ class ProfileCardFrame(BaseServiceCard):
         self._name_label.setWordWrap(True)
         top_row.addWidget(self._name_label, 1)
 
-        self._check_label = QLabel()
-        self._check_label.setFixedSize(20, 20)
-        self._check_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        top_row.addWidget(self._check_label, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+        self._active_badge = QLabel()
+        self._active_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._active_badge.setStyleSheet("background: transparent;")
+        top_row.addWidget(self._active_badge, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
         root.addLayout(top_row)
 
         self._strategy_label = QLabel()
@@ -982,6 +982,14 @@ class ProfileCardFrame(BaseServiceCard):
 
     def set_theme(self, theme: str) -> None:
         self._theme = theme
+        self._sync_style()
+        self.update()
+
+    def set_app_accent(self, hex_color: str) -> None:
+        hex_color = str(hex_color or "#7380ff")
+        if hex_color == self._accent_hex:
+            return
+        self._accent_hex = hex_color
         self._sync_style()
         self.update()
 
@@ -1057,14 +1065,17 @@ class ProfileCardFrame(BaseServiceCard):
             f"QPushButton:hover {{ background: rgba(255, 80, 80, 25); color: #ff5050; }}"
         )
         if selected:
-            self._check_label.setText("")
-            self._check_label.setStyleSheet(
-                f"background: {accent.name(QColor.NameFormat.HexArgb)}; border-radius: 10px; padding: 0px; margin: 0px;"
+            self._active_badge.setText(self._t("Активный", "Active"))
+            ac = accent
+            self._active_badge.setStyleSheet(
+                f"color: {accent.name(QColor.NameFormat.HexRgb)};"
+                f"background: rgba({ac.red()}, {ac.green()}, {ac.blue()}, 26);"
+                f"border: 1px solid rgba({ac.red()}, {ac.green()}, {ac.blue()}, 62);"
+                "border-radius: 10px; padding: 2px 9px; font-size: 11px; font-weight: 600;"
             )
         else:
-            self._check_label.setText("")
-            self._check_label.setPixmap(QPixmap())
-            self._check_label.setStyleSheet("background: transparent;")
+            self._active_badge.setText("")
+            self._active_badge.setStyleSheet("background: transparent;")
 
 
 class ServiceToggleCard(QFrame):
@@ -7279,6 +7290,12 @@ class MainWindow(QMainWindow):
             layout.addWidget(frame)
             return fl
 
+        def _divider():
+            line = QFrame()
+            line.setObjectName("SettingsDivider")
+            line.setFixedHeight(1)
+            layout.addWidget(line)
+
         settings = self.context.settings.get()
         ui_language = settings.language
 
@@ -7345,6 +7362,7 @@ class MainWindow(QMainWindow):
         app_section.addWidget(branch_w)
 
         # --- Discord Rich Presence section ---
+        _divider()
         rpc_section = _section("Discord Rich Presence")
 
         discord_rpc_cb = QCheckBox(self._t("Включить"))
@@ -7374,18 +7392,46 @@ class MainWindow(QMainWindow):
         rpc_section.addWidget(rpc_row)
 
         # --- Profiles section ---
-        profiles_section = _section(self._t("Profiles"))
+        _divider()
+
+        profiles_header = QFrame()
+        profiles_header.setObjectName("ProfilesHeader")
+        header_layout = QHBoxLayout(profiles_header)
+        header_layout.setContentsMargins(18, 13, 18, 13)
+        header_layout.setSpacing(12)
+
+        header_text = QVBoxLayout()
+        header_text.setContentsMargins(0, 0, 0, 0)
+        header_text.setSpacing(1)
+        profiles_title = QLabel(self._t("Профили", "Profiles"))
+        profiles_title.setObjectName("ProfilesTitle")
+        profiles_subtitle = QLabel(self._t("Управление профилями подключения", "Connection profiles management"))
+        profiles_subtitle.setObjectName("ProfilesSubtitle")
+        header_text.addWidget(profiles_title)
+        header_text.addWidget(profiles_subtitle)
+        header_layout.addLayout(header_text, 1)
+
+        add_profile_btn = QPushButton(self._t("+ Добавить профиль", "+ Add profile"))
+        add_profile_btn.setObjectName("AddProfileButton")
+        add_profile_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        add_profile_btn.clicked.connect(self._settings_create_profile)
+        header_layout.addWidget(add_profile_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self._settings_profiles_header = profiles_header
+        self._settings_profiles_title = profiles_title
+        self._settings_profiles_subtitle = profiles_subtitle
+        self._settings_profiles_add_btn = add_profile_btn
+        self._refresh_settings_profiles_header()
+        layout.addWidget(profiles_header)
 
         self._settings_profiles_grid = QWidget()
+        self._settings_profiles_grid.setObjectName("ProfilesGrid")
         self._settings_profiles_grid_layout = QGridLayout(self._settings_profiles_grid)
-        self._settings_profiles_grid_layout.setContentsMargins(8, 8, 8, 8)
-        self._settings_profiles_grid_layout.setSpacing(6)
+        self._settings_profiles_grid_layout.setContentsMargins(0, 0, 0, 0)
+        self._settings_profiles_grid_layout.setSpacing(10)
         self._settings_profiles_grid_layout.setColumnStretch(0, 1)
         self._settings_profiles_grid_layout.setColumnStretch(1, 1)
-        self._settings_profiles_grid.setStyleSheet(
-            "QWidget#ProfilesGrid { background: rgba(128,128,128,18); border-radius: 10px; }"
-        )
-        self._settings_profiles_grid.setObjectName("ProfilesGrid")
+        self._settings_profiles_grid.setStyleSheet("QWidget#ProfilesGrid { background: transparent; }")
 
         profiles_scroll = QScrollArea()
         profiles_scroll.setWidgetResizable(True)
@@ -7393,15 +7439,9 @@ class MainWindow(QMainWindow):
         profiles_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         profiles_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         profiles_scroll.setWidget(self._settings_profiles_grid)
-        profiles_scroll.setMinimumHeight(280)
+        profiles_scroll.setMinimumHeight(150)
         profiles_scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
-        profiles_section.addWidget(profiles_scroll)
-
-        add_profile_btn = QPushButton(self._t("+ Добавить профиль", "+ Add profile"))
-        add_profile_btn.setFixedHeight(38)
-        add_profile_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        add_profile_btn.clicked.connect(self._settings_create_profile)
-        profiles_section.addWidget(add_profile_btn)
+        layout.addWidget(profiles_scroll)
 
         self._refresh_settings_profiles_list()
 
@@ -7436,6 +7476,7 @@ class MainWindow(QMainWindow):
             strategy_name = self._resolve_general_display_name(str(general_id))
             card = ProfileCardFrame(p, p.id == active, translator=self._t)
             card.set_theme(self.context.settings.get().theme)
+            card.set_app_accent(str(self.context.settings.get().accent_color or "#7380ff"))
             card._strategy_label.setText(self._t("Стратегия:", "Strategy:") + " " + strategy_name)
             card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             card.selected.connect(self._settings_profile_card_selected)
@@ -7444,6 +7485,52 @@ class MainWindow(QMainWindow):
             row = idx // columns
             col = idx % columns
             grid.addWidget(card, row, col)
+
+    def _refresh_settings_profiles_header(self, accent_hex: str | None = None, theme: str | None = None) -> None:
+        header = getattr(self, "_settings_profiles_header", None)
+        if header is None:
+            return
+        settings = self.context.settings.get()
+        accent_hex = str(accent_hex or settings.accent_color or "#7380ff")
+        theme = str(theme or settings.theme)
+        accent = QColor(accent_hex)
+        light = is_light_theme(theme)
+        accent_top = accent.lighter(118 if light else 116)
+        accent_bottom = accent.darker(100)
+        ar, ag, ab = accent.red(), accent.green(), accent.blue()
+        if light:
+            title_color = "#10233d"
+            sub_color = "rgba(16, 35, 61, 168)"
+            btn_bg = "rgba(16, 35, 61, 190)"
+            btn_fg = "#ffffff"
+            btn_border = "rgba(16, 35, 61, 0)"
+            btn_hover = "rgba(16, 35, 61, 235)"
+            btn_pressed = "rgba(16, 35, 61, 255)"
+            top_a, bot_a, border_a = 44, 24, 64
+        else:
+            title_color = "#ffffff"
+            sub_color = "rgba(255, 255, 255, 178)"
+            btn_bg = "rgba(255, 255, 255, 26)"
+            btn_fg = "#ffffff"
+            btn_border = "rgba(255, 255, 255, 70)"
+            btn_hover = "rgba(255, 255, 255, 45)"
+            btn_pressed = "rgba(255, 255, 255, 58)"
+            top_a, bot_a, border_a = 54, 34, 70
+        header.setStyleSheet(
+            "QFrame#ProfilesHeader {"
+            " background: qlineargradient(x1:0, y1:0, x2:1, y2:1,"
+            f" stop:0 rgba({accent_top.red()}, {accent_top.green()}, {accent_top.blue()}, {top_a}),"
+            f" stop:1 rgba({accent_bottom.red()}, {accent_bottom.green()}, {accent_bottom.blue()}, {bot_a}));"
+            f" border: 1px solid rgba({ar}, {ag}, {ab}, {border_a});"
+            " border-radius: 16px;"
+            "}"
+            f' QLabel#ProfilesTitle {{ color: {title_color}; font-size: 16px; font-weight: 700; background: transparent; }}'
+            f' QLabel#ProfilesSubtitle {{ color: {sub_color}; font-size: 12px; background: transparent; }}'
+            f' QPushButton#AddProfileButton {{ background: {btn_bg}; color: {btn_fg}; border: 1px solid {btn_border};'
+            " border-radius: 9px; padding: 7px 18px; font-size: 12px; font-weight: 600; }"
+            f' QPushButton#AddProfileButton:hover {{ background: {btn_hover}; }}'
+            f' QPushButton#AddProfileButton:pressed {{ background: {btn_pressed}; }}'
+        )
 
     def _settings_profile_card_selected(self, profile_id: str) -> None:
         if profile_id == self._active_profile_id():
@@ -7456,10 +7543,15 @@ class MainWindow(QMainWindow):
         profile = self.context.profiles.get_profile(profile_id)
         if profile is None:
             return
-        name, ok = QInputDialog.getText(self, self._t("Rename profile"), self._t("New name:"), text=profile.name)
-        if not ok or not name.strip():
+        name = self._ask_text_value(
+            self._t("Rename profile"),
+            self._t("New name:"),
+            initial=profile.name,
+            ok_text=self._t("OK"),
+        )
+        if not name:
             return
-        self.context.profiles.update_profile(profile_id, name=name.strip())
+        self.context.profiles.update_profile(profile_id, name=name)
         self._refresh_settings_profiles_list()
         self._update_profile_carousel()
 
@@ -7482,8 +7574,12 @@ class MainWindow(QMainWindow):
         self._update_profile_carousel()
 
     def _settings_create_profile(self) -> None:
-        name, ok = QInputDialog.getText(self, self._t("Create profile"), self._t("Profile name:"))
-        if not ok or not name.strip():
+        name = self._ask_text_value(
+            self._t("Create profile"),
+            self._t("Profile name:"),
+            ok_text=self._t("Создать", "Create"),
+        )
+        if not name:
             return
         current_id = self._active_profile_id()
         source = self.context.profiles.get_profile(current_id)
@@ -7491,7 +7587,7 @@ class MainWindow(QMainWindow):
             snapshot = self.context.profiles._make_snapshot(self.context.settings)
         else:
             snapshot = source.settings_snapshot or {}
-        self.context.profiles.create_profile(name.strip(), snapshot)
+        self.context.profiles.create_profile(name, snapshot)
         self._refresh_settings_profiles_list()
         self._update_profile_carousel()
 
@@ -9759,8 +9855,13 @@ class MainWindow(QMainWindow):
                     w = grid.itemAt(i).widget()
                     if isinstance(w, ProfileCardFrame):
                         w.set_theme(theme)
+                        w.set_app_accent(str(accent))
             except Exception:
                 pass
+        try:
+            self._refresh_settings_profiles_header(str(accent), theme)
+        except Exception:
+            pass
 
     def _apply_onboarding_style(self) -> None:
         if self._content_surface is None:
@@ -14707,18 +14808,26 @@ class MainWindow(QMainWindow):
             )
         return message
 
-    def _ask_text_value(self, title: str, text: str, placeholder: str = "") -> str:
+    def _ask_text_value(
+        self,
+        title: str,
+        text: str,
+        placeholder: str = "",
+        initial: str = "",
+        ok_text: str | None = None,
+    ) -> str:
         dialog = AppDialog(self, self.context, title)
         label = QLabel(text)
         label.setWordWrap(True)
         dialog.body_layout.addWidget(label)
         field = QLineEdit()
+        field.setText(initial)
         field.setPlaceholderText(placeholder)
         dialog.body_layout.addWidget(field)
         row = QHBoxLayout()
         row.addStretch(1)
         cancel_btn = QPushButton(self._t("Cancel"))
-        ok_btn = QPushButton(self._t("Load"))
+        ok_btn = QPushButton(ok_text or self._t("OK"))
         ok_btn.setProperty("class", "primary")
         self._attach_button_animations(cancel_btn)
         self._attach_button_animations(ok_btn)
@@ -15244,10 +15353,15 @@ class MainWindow(QMainWindow):
             if isinstance(w, ProfileCardFrame):
                 w.set_selected_state(w.profile.id == active)
                 w.set_theme(self.context.settings.get().theme)
+                w.set_app_accent(str(self.context.settings.get().accent_color or "#7380ff"))
 
     def _create_profile(self) -> None:
-        name, ok = QInputDialog.getText(self, self._t("Create profile"), self._t("Profile name:"))
-        if not ok or not name.strip():
+        name = self._ask_text_value(
+            self._t("Create profile"),
+            self._t("Profile name:"),
+            ok_text=self._t("Создать", "Create"),
+        )
+        if not name:
             return
         current_id = self._active_profile_id()
         source = self.context.profiles.get_profile(current_id)
@@ -15255,7 +15369,7 @@ class MainWindow(QMainWindow):
             snapshot = self.context.profiles._make_snapshot(self.context.settings)
         else:
             snapshot = source.settings_snapshot or {}
-        self.context.profiles.create_profile(name.strip(), snapshot)
+        self.context.profiles.create_profile(name, snapshot)
         self._update_profile_carousel()
 
     def _rename_profile(self, profile_id: str) -> None:
@@ -15264,10 +15378,15 @@ class MainWindow(QMainWindow):
             return
         if profile_id == "default":
             return
-        name, ok = QInputDialog.getText(self, self._t("Rename profile"), self._t("New name:"), text=profile.name)
-        if not ok or not name.strip():
+        name = self._ask_text_value(
+            self._t("Rename profile"),
+            self._t("New name:"),
+            initial=profile.name,
+            ok_text=self._t("OK"),
+        )
+        if not name:
             return
-        self.context.profiles.update_profile(profile_id, name=name.strip())
+        self.context.profiles.update_profile(profile_id, name=name)
         self._update_profile_carousel()
 
     def _delete_profile(self, profile_id: str) -> None:

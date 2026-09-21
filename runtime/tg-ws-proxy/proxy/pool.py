@@ -289,7 +289,8 @@ class _CfWorkerPool:
         for worker_domain in self.available_domains(worker_domains):
             try:
                 ws = await RawWebSocket.connect(
-                    worker_domain, worker_domain, timeout=8, path=path)
+                    worker_domain, worker_domain, timeout=8, path=path,
+                    secure=not proxy_config.disable_secure)
                 return ws, worker_domain
             except Exception as exc:
                 self.report_failure(worker_domain, exc)

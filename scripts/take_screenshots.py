@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 OUTPUT = ROOT / "assets"
 OUTPUT.mkdir(parents=True, exist_ok=True)
 
-RADIUS = 18
+RADIUS = 16
 PAGES = [(0, "dashboard"), (1, "services"), (3, "mods")]
 THEMES = ["light", "dark"]
 

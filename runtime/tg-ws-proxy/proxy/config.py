@@ -70,6 +70,7 @@ class ProxyConfig:
     fallback_cfproxy: bool = True
     cfproxy_user_domains: List[str] = field(default_factory=list)
     cfproxy_worker_domains: List[str] = field(default_factory=list)
+    disable_secure: bool = False
     fake_tls_domain: str = ''
     proxy_protocol: bool = False
     force_test_dc: bool = False
