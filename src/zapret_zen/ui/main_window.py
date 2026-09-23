@@ -5111,6 +5111,15 @@ class MainWindow(QMainWindow):
             # does not leave square 90-degree corners.
             self._apply_opaque_window_mask()
             _startup_trace("MainWindow: DWM rounded corners re-applied on show")
+        if self.isMinimized():
+            # The window is being shown in a minimized state (custom minimize
+            # button / OS minimize). Never run the fade-in animation, the
+            # post-show page sync or the bring-to-front logic here:
+            # raise_() + activateWindow() would instantly restore the window.
+            self._skip_next_show_fade = False
+            self._skip_next_show_focus = False
+            self.setWindowOpacity(1.0)
+            return
         self._sync_nav_highlight(animated=self._nav_highlight_initialized)
         if not self._nav_highlight_initialized:
             self._nav_highlight_initialized = True
@@ -5520,6 +5529,12 @@ class MainWindow(QMainWindow):
             return False
 
     def _apply_opaque_window_mask(self) -> None:
+        if self.isMinimized():
+            # Leave the mask as-is while minimized: SetWindowRgn / DWM calls
+            # made during a minimize cycle can interfere with the minimized
+            # state (a resizeEvent with the minimized geometry would otherwise
+            # re-apply the region mask mid-transition). Re-applied on next show.
+            return
         if self._try_dwm_rounded_corners():
             self.clearMask()
             _startup_trace("MainWindow: using DWM rounded corners, mask cleared")
@@ -5645,6 +5660,18 @@ class MainWindow(QMainWindow):
             self._windows_taskbar.set_progress_state(hwnd, WindowsTaskbarIntegration.TBPF_NOPROGRESS)
 
     def _toast_notification(self, level: str, title: str, message: str) -> None:
+        try:
+            settings = self.context.settings.get()
+        except Exception:
+            settings = None
+        if settings is not None and not settings.tray_notifications_enabled:
+            return
+        if getattr(self, "_window_fade_pending_action", None) is not None:
+            # Window is fading out / hiding (close-to-tray, minimize, exit).
+            # Sending a shell notification synchronously during the lose-focus
+            # transition can pull Windows into a transient Focus Assist / DND
+            # state, so drop toasts raised mid-transition.
+            return
         icon_map = {
             "error": QSystemTrayIcon.MessageIcon.Critical,
             "warning": QSystemTrayIcon.MessageIcon.Warning,
@@ -7352,6 +7379,10 @@ class MainWindow(QMainWindow):
         check_upd_cb.setChecked(settings.check_updates_on_start)
         ctrl["check_updates"] = check_upd_cb
         app_section.addWidget(check_upd_cb)
+        tray_notif_cb = QCheckBox(self._t("Tray notifications"))
+        tray_notif_cb.setChecked(settings.tray_notifications_enabled)
+        ctrl["tray_notifications"] = tray_notif_cb
+        app_section.addWidget(tray_notif_cb)
 
         branch_items = [
             (self._t("Release"), "release"),
@@ -8103,7 +8134,7 @@ class MainWindow(QMainWindow):
         lang_grp = all_ctrl.get("language")
         if isinstance(lang_grp, QButtonGroup):
             lang_grp.idClicked.connect(_lang_changed)
-        for key in ("autostart", "tray", "auto_components", "check_updates", "tg_cfproxy", "tg_cfproxy_priority", "discord_rpc"):
+        for key in ("autostart", "tray", "auto_components", "check_updates", "tray_notifications", "tg_cfproxy", "tg_cfproxy_priority", "discord_rpc"):
             cb = all_ctrl.get(key)
             if isinstance(cb, QCheckBox):
                 cb.stateChanged.connect(_ctrl_changed)
@@ -8210,6 +8241,9 @@ class MainWindow(QMainWindow):
         cb = ctrl.get("check_updates")
         if isinstance(cb, QCheckBox):
             cb.setChecked(settings.check_updates_on_start)
+        cb = ctrl.get("tray_notifications")
+        if isinstance(cb, QCheckBox):
+            cb.setChecked(settings.tray_notifications_enabled)
         _set_seg("update_branch", settings.update_branch)
 
         tab_bar = page.findChild(_SettingsTabBar, "SettingsTabBar")
@@ -8316,6 +8350,9 @@ class MainWindow(QMainWindow):
         cb = ctrl.get("check_updates")
         if isinstance(cb, QCheckBox):
             payload["check_updates_on_start"] = cb.isChecked()
+        cb = ctrl.get("tray_notifications")
+        if isinstance(cb, QCheckBox):
+            payload["tray_notifications_enabled"] = cb.isChecked()
         val = _read_seg("update_branch")
         if val:
             payload["update_branch"] = val
@@ -10518,7 +10555,12 @@ class MainWindow(QMainWindow):
             self._component_loading_timer.stop()
 
     def _minimize_window_native(self) -> None:
-        self._animate_window_fade(showing=False, action="minimize")
+        # Minimize straight to the taskbar. A fade-out would leave the window
+        # fully invisible yet still foreground for ~130 ms (the reported
+        # "disappears for a split second" flicker), and showMinimized() firing
+        # a showEvent would trigger the fade-in + bring-to-front logic (see
+        # showEvent) that pops the window back up immediately.
+        self.showMinimized()
 
     def _selected_component_id(self) -> str | None:
         item = self.components_list.currentItem()
