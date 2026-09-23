@@ -246,6 +246,11 @@ def _build_base_css() -> tuple[str, str]:
         border: none;
         border-radius: 14px;
     }
+    #SettingsDivider {
+        background: #2b3b58;
+        border: none;
+        max-height: 1px;
+    }
     #LoadingOverlay {
         background: rgba(9, 13, 22, 0.42);
     }
@@ -857,6 +862,11 @@ def _build_base_css() -> tuple[str, str]:
         background: transparent;
         border: none;
         border-radius: 14px;
+    }
+    #SettingsDivider {
+        background: #d7e1f0;
+        border: none;
+        max-height: 1px;
     }
     #LoadingOverlay {
         background: rgba(228, 236, 248, 0.58);

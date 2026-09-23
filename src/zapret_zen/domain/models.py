@@ -25,6 +25,7 @@ class AppSettings:
     check_updates_on_start: bool = True
     update_branch: str = "release"
     notifications_enabled: bool = True
+    tray_notifications_enabled: bool = True
     work_root: str = ""
     active_profile_id: str = "default"
     enabled_component_ids: list[str] = field(default_factory=list)

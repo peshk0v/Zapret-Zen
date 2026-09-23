@@ -14,6 +14,7 @@ _SNAPSHOT_SKIP = {
     "dismissed_component_updates",
     "dismissed_app_update_key",
     "notifications_enabled",
+    "tray_notifications_enabled",
     "work_root",
     "zapret_block_quic",
     "pending_mod_welcome",

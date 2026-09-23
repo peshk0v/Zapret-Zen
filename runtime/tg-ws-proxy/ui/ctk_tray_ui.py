@@ -44,19 +44,22 @@ _CFWORKER_TEST_DST = {
 }
 
 
-def _run_connectivity_test(cases: list) -> dict:
+def _run_connectivity_test(cases: list, *, secure: bool = True) -> dict:
     import base64
+    from contextlib import nullcontext
     import ssl
+    import certifi
     import socket as _socket
 
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
+    ctx = ssl.create_default_context(cafile=certifi.where()) if secure else None
+    port = 443 if secure else 80
     results = {}
     for dc, connect_host, sni_host, req_host, path in cases:
         try:
-            with _socket.create_connection((connect_host, 443), timeout=5) as raw:
-                with ctx.wrap_socket(raw, server_hostname=sni_host) as ssock:
+            with _socket.create_connection((connect_host, port), timeout=5) as raw:
+                connection = (ctx.wrap_socket(raw, server_hostname=sni_host)
+                              if secure else nullcontext(raw))
+                with connection as ssock:
                     ws_key = base64.b64encode(os.urandom(16)).decode()
                     req = (
                         f"GET {path} HTTP/1.1\r\n"
@@ -91,36 +94,36 @@ def _run_connectivity_test(cases: list) -> dict:
     return results
 
 
-def _run_cfproxy_connectivity_test(domain: str) -> dict:
+def _run_cfproxy_connectivity_test(domain: str, *, secure: bool = True) -> dict:
     cases = []
     for dc in _CFPROXY_TEST_DCS:
         host = f"kws{dc}.{domain}"
         cases.append((dc, host, host, host, "/apiws"))
-    return _run_connectivity_test(cases)
+    return _run_connectivity_test(cases, secure=secure)
 
 
-def _run_cfworker_connectivity_test(domain: str) -> dict:
+def _run_cfworker_connectivity_test(domain: str, *, secure: bool = True) -> dict:
     cases = []
     for dc in _CFPROXY_TEST_DCS:
         dst = _CFWORKER_TEST_DST[dc]
         path = f"/apiws?dst={dst}&dc={dc}&media=0"
         cases.append((dc, domain, domain, domain, path))
-    return _run_connectivity_test(cases)
+    return _run_connectivity_test(cases, secure=secure)
 
 
-def _run_cfproxy_multi_test(domains: list) -> dict:
-    return {domain: _run_cfproxy_connectivity_test(domain) for domain in domains}
+def _run_cfproxy_multi_test(domains: list, *, secure: bool = True) -> dict:
+    return {domain: _run_cfproxy_connectivity_test(domain, secure=secure) for domain in domains}
 
 
-def _run_cfworker_multi_test(domains: list) -> dict:
-    return {domain: _run_cfworker_connectivity_test(domain) for domain in domains}
+def _run_cfworker_multi_test(domains: list, *, secure: bool = True) -> dict:
+    return {domain: _run_cfworker_connectivity_test(domain, secure=secure) for domain in domains}
 
 
-def _run_cfproxy_auto_test(domains: list) -> tuple:
+def _run_cfproxy_auto_test(domains: list, *, secure: bool = True) -> tuple:
     merged: dict = {}
     best_domain = None
     for domain in reversed(domains):
-        res = _run_cfproxy_connectivity_test(domain)
+        res = _run_cfproxy_connectivity_test(domain, secure=secure)
         if all(v is True for v in res.values()):
             return domain, res
         for dc, v in res.items():
@@ -350,6 +353,7 @@ class TrayConfigFormWidgets:
     secret_var: Any
     dc_textbox: Any
     verbose_var: Any
+    no_secure_var: Any
     adv_entries: List[Any]
     adv_keys: Tuple[str, ...]
     autostart_var: Optional[Any]
@@ -536,6 +540,7 @@ def install_tray_config_form(
     _cf_test_btn = [None]
 
     def _on_cf_test():
+        secure = not no_secure_var.get()
         user_domains = (
             coerce_domain_list(cfproxy_user_domain_var.get())
             if cf_custom_cb_var.get() else []
@@ -547,7 +552,7 @@ def install_tray_config_form(
         if user_domains:
             def _worker():
                 try:
-                    per = _run_cfproxy_multi_test(user_domains)
+                    per = _run_cfproxy_multi_test(user_domains, secure=secure)
                     if btn:
                         btn.after(
                             0,
@@ -564,7 +569,7 @@ def install_tray_config_form(
         else:
             def _worker_auto():
                 try:
-                    ok_domain, res = _run_cfproxy_auto_test(balancer.domains)
+                    ok_domain, res = _run_cfproxy_auto_test(balancer.domains, secure=secure)
                     if btn:
                         btn.after(
                             0,
@@ -672,6 +677,7 @@ def install_tray_config_form(
         btn.configure(state="normal" if enabled else "disabled")
 
     def _on_cfworker_test():
+        secure = not no_secure_var.get()
         domains = coerce_domain_list(cfproxy_worker_domain_var.get())
         btn = _cfworker_test_btn[0]
         if not cfproxy_worker_enabled_var.get() or not domains or btn is None:
@@ -681,7 +687,7 @@ def install_tray_config_form(
 
         def _worker():
             try:
-                per = _run_cfworker_multi_test(domains)
+                per = _run_cfworker_multi_test(domains, secure=secure)
                 btn.after(
                     0,
                     lambda: _show_multi_connectivity_results(
@@ -729,6 +735,11 @@ def install_tray_config_form(
     verbose_cb = _checkbox(ctk, log_inner, theme, t("label.verbose"), verbose_var)
     verbose_cb.pack(anchor="w", pady=(0, 6))
     attach_ctk_tooltip(verbose_cb, t("tip.verbose"))
+
+    no_secure_var = ctk.BooleanVar(value=cfg.get("no_secure", False))
+    no_secure_cb = _checkbox(ctk, log_inner, theme, t("label.no_secure"), no_secure_var)
+    no_secure_cb.pack(anchor="w", pady=(0, 6))
+    attach_ctk_tooltip(no_secure_cb, t("tip.no_secure"))
 
     adv_frame = ctk.CTkFrame(log_inner, fg_color="transparent")
     adv_frame.pack(fill="x")
@@ -823,7 +834,7 @@ def install_tray_config_form(
 
     return TrayConfigFormWidgets(
         host_var=host_var, port_var=port_var, secret_var=secret_var,
-        dc_textbox=dc_textbox, verbose_var=verbose_var,
+        dc_textbox=dc_textbox, verbose_var=verbose_var, no_secure_var=no_secure_var,
         adv_entries=adv_entries, adv_keys=adv_keys,
         autostart_var=autostart_var, check_updates_var=check_updates_var,
         cfproxy_var=cfproxy_var,
@@ -935,6 +946,8 @@ def validate_config_form(
         new_cfg["appearance"] = _appearance_to_cfg(widgets.appearance_var.get())
     if widgets.language_var is not None:
         new_cfg["language"] = language_from_label(widgets.language_var.get()).value
+    if widgets.no_secure_var is not None:
+        new_cfg["no_secure"] = bool(widgets.no_secure_var.get())
     return new_cfg
 
 

@@ -25,6 +25,7 @@ _TRAY_DEFAULTS_COMMON: Dict[str, Any] = {
     "cfproxy_worker_enabled": False,
     "cfproxy_worker_domain": [],
     "force_test_dc": False,
+    "no_secure": False,
 }
 
 
