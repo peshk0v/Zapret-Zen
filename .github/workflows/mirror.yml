@@ -1,0 +1,193 @@
+name: Mirror
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - '**'
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'GitHub release tag to mirror (e.g. v2.6)'
+        required: true
+        type: string
+
+env:
+  SF_USERNAME: peshk0v
+  SF_PROJECT: zapret-zen
+  CODERBERG_USER: peshk0v
+  CODERBERG_REPO: peshk0v/Zapret-Zen
+
+permissions:
+  contents: read
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone mirror from GitHub
+        run: |
+          git clone --mirror "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" mirror.git
+
+      - name: Push mirror to SourceForge
+        if: secrets.SF_SSH_KEY != ''
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.SF_SSH_KEY }}" > ~/.ssh/sf_key
+          chmod 600 ~/.ssh/sf_key
+          ssh-keyscan -H -t rsa,ecdsa,ed25519 git.code.sf.net >> ~/.ssh/known_hosts
+          cd mirror.git
+          git remote add sourceforge "ssh://$SF_USERNAME@git.code.sf.net/p/$SF_PROJECT/code"
+          GIT_SSH_COMMAND="ssh -i $HOME/.ssh/sf_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes" \
+            git push --force --prune sourceforge "refs/heads/*:refs/heads/*" "refs/tags/*:refs/tags/*"
+
+      - name: Push mirror to Codeberg
+        if: secrets.CODERBERG_ACCESS_TOKEN != ''
+        env:
+          CODETOKEN: ${{ secrets.CODERBERG_ACCESS_TOKEN }}
+        run: |
+          git config --global credential.helper '!f() { echo "username=$CODERBERG_USER"; echo "password=$CODETOKEN"; }; f'
+          cd mirror.git
+          git remote add codeberg "https://codeberg.org/${CODERBERG_REPO}.git"
+          git push --force --prune codeberg "refs/heads/*:refs/heads/*" "refs/tags/*:refs/tags/*"
+
+  upload-release:
+    if: >-
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' && inputs.tag != '')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Resolve release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            TAG="${{ github.event.release.tag_name }}"
+          else
+            TAG="${{ inputs.tag }}"
+          fi
+          # Strip exactly one leading 'v' (used for the SourceForge folder only)
+          FOLDER=$(printf '%s' "$TAG" | sed -E 's/^v//')
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "folder=$FOLDER" >> "$GITHUB_OUTPUT"
+          echo "Resolved tag: $TAG → SourceForge folder: $FOLDER"
+
+      - name: Set up SSH key for SourceForge
+        if: secrets.SF_SSH_KEY != ''
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.SF_SSH_KEY }}" > ~/.ssh/sf_key
+          chmod 600 ~/.ssh/sf_key
+          ssh-keyscan -H -t rsa,ecdsa,ed25519 frs.sourceforge.net >> ~/.ssh/known_hosts
+          ssh-keyscan -H -t rsa,ecdsa,ed25519 git.code.sf.net >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p release-assets
+          gh release download "${{ steps.tag.outputs.tag }}" \
+            --repo "${{ github.repository }}" \
+            --dir release-assets \
+            --skip-existing
+          echo "Downloaded assets:"
+          ls -lh release-assets/ || { echo "No assets found for this release"; exit 1; }
+
+      - name: Upload assets to SourceForge
+        if: secrets.SF_SSH_KEY != ''
+        run: |
+          rsync -avP \
+            -e "ssh -i ~/.ssh/sf_key -o StrictHostKeyChecking=yes" \
+            ./release-assets/ \
+            "$SF_USERNAME@frs.sourceforge.net:/home/frs/project/$SF_PROJECT/${{ steps.tag.outputs.folder }}/"
+
+      - name: Set default downloads on SourceForge
+        if: secrets.SF_API_KEY != ''
+        env:
+          SF_API_KEY: ${{ secrets.SF_API_KEY }}
+        run: |
+          FOLDER="${{ steps.tag.outputs.folder }}"
+          curl -sS -f \
+            -H "Accept: application/json" \
+            -X PUT \
+            -d "default=windows&default=linux&default=mac" \
+            -d "api_key=${SF_API_KEY}" \
+            "https://sourceforge.net/projects/${SF_PROJECT}/files/${FOLDER}/" || {
+              echo "::warning::Failed to set default downloads via SourceForge API (non-fatal)"
+            }
+
+      - name: Sync release to Codeberg
+        if: secrets.CODERBERG_ACCESS_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CODETOKEN: ${{ secrets.CODERBERG_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          BASE="https://codeberg.org/api/v1/repos/${CODERBERG_REPO}"
+          TAG="${{ steps.tag.outputs.tag }}"
+          AUTH="Authorization: token ${CODETOKEN}"
+
+          # Take release metadata from GitHub (works for both triggers)
+          gh release view "$TAG" --repo "${{ github.repository }}" \
+            --json name,body,isPrerelease > release-info.json
+          RELEASE_NAME=$(jq -r '.name // ""' release-info.json)
+          PRERELEASE=$(jq -r '.isPrerelease' release-info.json)
+          jq -r '.body // ""' release-info.json > release-body.txt
+
+          # Reuse an existing Codeberg release when present, otherwise create it
+          STATUS=$(curl -sS -o /tmp/cb_release.json -w '%{http_code}' -H "$AUTH" "$BASE/releases/tags/$TAG")
+          PAYLOAD=$(jq -n \
+            --arg tag "$TAG" \
+            --arg name "$RELEASE_NAME" \
+            --arg pre "$PRERELEASE" \
+            --rawfile body release-body.txt \
+            '{tag_name:$tag, name:$name, body:$body, prerelease:($pre == "true"), draft:false}' 2>/dev/null || \
+            jq -n \
+              --arg tag "$TAG" \
+              --arg name "$RELEASE_NAME" \
+              --arg pre "$PRERELEASE" \
+              '{tag_name:$tag, name:$name, prerelease:($pre == "true"), draft:false}')
+
+          if [ "$STATUS" = "404" ]; then
+            echo "Creating Codeberg release for $TAG"
+            curl -sS -f -X POST -H "$AUTH" -H "Content-Type: application/json" \
+              --data "$PAYLOAD" "$BASE/releases" > release.json
+          else
+            RELEASE_ID=$(jq -r '.id' /tmp/cb_release.json)
+            echo "Updating Codeberg release for $TAG (id=$RELEASE_ID)"
+            curl -sS -f -X PATCH -H "$AUTH" -H "Content-Type: application/json" \
+              --data "$PAYLOAD" "$BASE/releases/$RELEASE_ID" > release.json
+          fi
+          RELEASE_ID=$(jq -r '.id' release.json)
+
+          # Replace assets so the mirror always matches GitHub
+          for OLD in $(curl -sS -H "$AUTH" "$BASE/releases/$RELEASE_ID/assets" | jq -r '.[]?.id'); do
+            echo "Removing stale asset id=$OLD"
+            curl -sS -f -X DELETE -H "$AUTH" "$BASE/releases/assets/$OLD" || true
+          done
+          for FILE in release-assets/*; do
+            [ -e "$FILE" ] || continue
+            NAME=$(basename "$FILE")
+            echo "Uploading asset: $NAME"
+            curl -sS -f -X POST -H "$AUTH" \
+              -F "attachment=@$FILE" "$BASE/releases/$RELEASE_ID/assets?name=$NAME" \
+              || echo "::warning::Failed to upload $NAME (non-fatal)"
+          done
+
+      - name: Summary
+        run: |
+          echo "## Mirror Release Upload" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Tag | \`${{ steps.tag.outputs.tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| SourceForge folder | \`${{ steps.tag.outputs.folder }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Files uploaded | $(ls release-assets/ 2>/dev/null \| wc -l) |" >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "${{ secrets.CODERBERG_ACCESS_TOKEN }}" ]; then
+            echo "| Codeberg release | https://codeberg.org/${CODERBERG_REPO}/releases/tag/${{ steps.tag.outputs.tag }} |" >> "$GITHUB_STEP_SUMMARY"
+          fi
