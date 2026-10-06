@@ -28,16 +28,22 @@ permissions:
 jobs:
   mirror:
     runs-on: ubuntu-latest
+    env:
+      SF_KEY: ${{ secrets.SF_SSH_KEY }}
+      CB_TOKEN: ${{ secrets.CODERBERG_ACCESS_TOKEN }}
     steps:
       - name: Clone mirror from GitHub
         run: |
           git clone --mirror "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" mirror.git
 
       - name: Push mirror to SourceForge
-        if: secrets.SF_SSH_KEY != ''
         run: |
+          if [ -z "$SF_KEY" ]; then
+            echo "::warning::SF_SSH_KEY secret is not set, skipping SourceForge mirror"
+            exit 0
+          fi
           mkdir -p ~/.ssh
-          printf '%s\n' "${{ secrets.SF_SSH_KEY }}" > ~/.ssh/sf_key
+          printf '%s\n' "$SF_KEY" > ~/.ssh/sf_key
           chmod 600 ~/.ssh/sf_key
           ssh-keyscan -H -t rsa,ecdsa,ed25519 git.code.sf.net >> ~/.ssh/known_hosts
           cd mirror.git
@@ -46,11 +52,12 @@ jobs:
             git push --force --prune sourceforge "refs/heads/*:refs/heads/*" "refs/tags/*:refs/tags/*"
 
       - name: Push mirror to Codeberg
-        if: secrets.CODERBERG_ACCESS_TOKEN != ''
-        env:
-          CODETOKEN: ${{ secrets.CODERBERG_ACCESS_TOKEN }}
         run: |
-          git config --global credential.helper '!f() { echo "username=$CODERBERG_USER"; echo "password=$CODETOKEN"; }; f'
+          if [ -z "$CB_TOKEN" ]; then
+            echo "::warning::CODERBERG_ACCESS_TOKEN secret is not set, skipping Codeberg mirror"
+            exit 0
+          fi
+          git config --global credential.helper '!f() { echo "username=$CODERBERG_USER"; echo "password=$CB_TOKEN"; }; f'
           cd mirror.git
           git remote add codeberg "https://codeberg.org/${CODERBERG_REPO}.git"
           git push --force --prune codeberg "refs/heads/*:refs/heads/*" "refs/tags/*:refs/tags/*"
@@ -62,6 +69,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      SF_KEY: ${{ secrets.SF_SSH_KEY }}
+      SF_API_KEY: ${{ secrets.SF_API_KEY }}
+      CB_TOKEN: ${{ secrets.CODERBERG_ACCESS_TOKEN }}
     steps:
       - name: Resolve release tag
         id: tag
@@ -78,10 +89,13 @@ jobs:
           echo "Resolved tag: $TAG → SourceForge folder: $FOLDER"
 
       - name: Set up SSH key for SourceForge
-        if: secrets.SF_SSH_KEY != ''
         run: |
+          if [ -z "$SF_KEY" ]; then
+            echo "::warning::SF_SSH_KEY secret is not set, skipping SourceForge upload"
+            exit 0
+          fi
           mkdir -p ~/.ssh
-          printf '%s\n' "${{ secrets.SF_SSH_KEY }}" > ~/.ssh/sf_key
+          printf '%s\n' "$SF_KEY" > ~/.ssh/sf_key
           chmod 600 ~/.ssh/sf_key
           ssh-keyscan -H -t rsa,ecdsa,ed25519 frs.sourceforge.net >> ~/.ssh/known_hosts
           ssh-keyscan -H -t rsa,ecdsa,ed25519 git.code.sf.net >> ~/.ssh/known_hosts 2>/dev/null || true
@@ -99,18 +113,22 @@ jobs:
           ls -lh release-assets/ || { echo "No assets found for this release"; exit 1; }
 
       - name: Upload assets to SourceForge
-        if: secrets.SF_SSH_KEY != ''
         run: |
+          if [ -z "$SF_KEY" ]; then
+            echo "::notice::SF_SSH_KEY secret is not set, skipping SourceForge upload"
+            exit 0
+          fi
           rsync -avP \
             -e "ssh -i ~/.ssh/sf_key -o StrictHostKeyChecking=yes" \
             ./release-assets/ \
             "$SF_USERNAME@frs.sourceforge.net:/home/frs/project/$SF_PROJECT/${{ steps.tag.outputs.folder }}/"
 
       - name: Set default downloads on SourceForge
-        if: secrets.SF_API_KEY != ''
-        env:
-          SF_API_KEY: ${{ secrets.SF_API_KEY }}
         run: |
+          if [ -z "$SF_API_KEY" ]; then
+            echo "::notice::SF_API_KEY secret is not set, skipping default downloads"
+            exit 0
+          fi
           FOLDER="${{ steps.tag.outputs.folder }}"
           curl -sS -f \
             -H "Accept: application/json" \
@@ -122,15 +140,17 @@ jobs:
             }
 
       - name: Sync release to Codeberg
-        if: secrets.CODERBERG_ACCESS_TOKEN != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          CODETOKEN: ${{ secrets.CODERBERG_ACCESS_TOKEN }}
         run: |
           set -euo pipefail
+          if [ -z "$CB_TOKEN" ]; then
+            echo "::warning::CODERBERG_ACCESS_TOKEN secret is not set, skipping Codeberg release"
+            exit 0
+          fi
           BASE="https://codeberg.org/api/v1/repos/${CODERBERG_REPO}"
           TAG="${{ steps.tag.outputs.tag }}"
-          AUTH="Authorization: token ${CODETOKEN}"
+          AUTH="Authorization: token ${CB_TOKEN}"
 
           # Take release metadata from GitHub (works for both triggers)
           gh release view "$TAG" --repo "${{ github.repository }}" \
@@ -188,6 +208,6 @@ jobs:
           echo "| Tag | \`${{ steps.tag.outputs.tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| SourceForge folder | \`${{ steps.tag.outputs.folder }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Files uploaded | $(ls release-assets/ 2>/dev/null \| wc -l) |" >> "$GITHUB_STEP_SUMMARY"
-          if [ -n "${{ secrets.CODERBERG_ACCESS_TOKEN }}" ]; then
+          if [ -n "$CB_TOKEN" ]; then
             echo "| Codeberg release | https://codeberg.org/${CODERBERG_REPO}/releases/tag/${{ steps.tag.outputs.tag }} |" >> "$GITHUB_STEP_SUMMARY"
           fi
