@@ -9487,6 +9487,16 @@ class MainWindow(QMainWindow):
             elif status == "updated":
                 self._show_info("TG WS Proxy", self._t("TG WS Proxy was updated successfully."))
                 self._toast_notification("success", "TG WS Proxy", self._t("TG WS Proxy was updated successfully."))
+            elif status == "rolled-back":
+                details = str(payload.get("error", "") or "").strip()
+                message = self._t(
+                    "Новая версия TG WS Proxy не запустилась, оставлена предыдущая.",
+                    "The new TG WS Proxy version failed to start, the previous one was restored.",
+                )
+                if details:
+                    message = f"{message}\n{details}"
+                self._toast_notification("error", "TG WS Proxy", message)
+                self._show_error("TG WS Proxy", message)
             else:
                 message = str(payload.get("error", self._t("Failed to update TG WS Proxy.")))
                 self._toast_notification("error", "TG WS Proxy", message)
