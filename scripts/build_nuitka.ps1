@@ -110,6 +110,25 @@ $nuitkaArgs = @(
   "src\zapret_zen\main.py"
 )
 
+# Every --include-package above must be importable in the build interpreter: those
+# modules are used by the external tg-ws-proxy worker (a data-dir Python) and cannot
+# be traced by Nuitka. Verify them here so a missing dependency fails with a clear
+# message instead of a cryptic Nuitka error.
+$missingPackages = @()
+foreach ($flag in $nuitkaArgs) {
+    if ($flag -notlike "--include-package=*") {
+        continue
+    }
+    $packageName = $flag.Substring("--include-package=".Length)
+    & $PythonExe -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('$packageName') else 1)"
+    if ($LASTEXITCODE -ne 0) {
+        $missingPackages += $packageName
+    }
+}
+if ($missingPackages.Count -gt 0) {
+    throw "tg-ws-proxy runtime packages are not importable in the build interpreter: $($missingPackages -join ', '). Add them to [project.dependencies] in pyproject.toml."
+}
+
 if ($DependencyTool -eq "windepends") {
     $nuitkaArgs = $nuitkaArgs[0..($nuitkaArgs.Length - 2)] + @("--experimental=force-dependencies-windepends", "src\zapret_zen\main.py")
 }
