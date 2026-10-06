@@ -11,6 +11,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
+from copy import deepcopy
 
 import psutil
 
@@ -211,7 +212,7 @@ def load_config() -> dict:
         except Exception as exc:
             log.warning("Failed to load config: %s", repr(exc))
     if cfg is None:
-        cfg = dict(DEFAULT_CONFIG)
+        cfg = deepcopy(DEFAULT_CONFIG)
     _apply_ui_language(cfg)
     return cfg
 
@@ -357,6 +358,7 @@ def apply_proxy_config(cfg: dict) -> bool:
     pc.buffer_size = max(4, cfg.get("buf_kb", DEFAULT_CONFIG["buf_kb"])) * 1024
     pc.pool_size = max(0, cfg.get("pool_size", DEFAULT_CONFIG["pool_size"]))
     pc.fallback_cfproxy = cfg.get("cfproxy", DEFAULT_CONFIG["cfproxy"])
+    pc.cfproxy_h2_media = cfg.get("h2", DEFAULT_CONFIG["h2"])
     cfproxy_user_domains = coerce_domain_list(
         cfg.get("cfproxy_user_domain", DEFAULT_CONFIG["cfproxy_user_domain"])
     )

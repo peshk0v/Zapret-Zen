@@ -1,5 +1,6 @@
 import asyncio
 import unittest
+from unittest.mock import AsyncMock, Mock, patch
 
 from proxy.raw_websocket import RawWebSocket, WsHandshakeError, _xor_mask
 
@@ -124,6 +125,39 @@ class HandshakeErrorTest(unittest.TestCase):
             self.assertTrue(WsHandshakeError(code, '').is_redirect)
         for code in (0, 200, 429, 502):
             self.assertFalse(WsHandshakeError(code, '').is_redirect)
+
+
+class HandshakeCleanupTest(unittest.IsolatedAsyncioTestCase):
+    async def test_cancelling_pending_upgrade_closes_socket(self):
+        reader = asyncio.StreamReader()
+        writer = Mock(drain=AsyncMock())
+        started = asyncio.Event()
+
+        async def drain():
+            started.set()
+
+        writer.drain.side_effect = drain
+        with patch('proxy.raw_websocket.asyncio.open_connection',
+                   AsyncMock(return_value=(reader, writer))), \
+                patch('proxy.raw_websocket.set_sock_opts'):
+            task = asyncio.create_task(RawWebSocket.connect('192.0.2.1', 'example.org'))
+            await asyncio.wait_for(started.wait(), 1)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        writer.close.assert_called_once()
+
+    async def test_failed_upgrade_closes_socket(self):
+        for error in (ConnectionResetError(), asyncio.TimeoutError()):
+            with self.subTest(error=type(error)):
+                reader = Mock(readline=AsyncMock(side_effect=error))
+                writer = Mock(drain=AsyncMock())
+                with patch('proxy.raw_websocket.asyncio.open_connection',
+                           AsyncMock(return_value=(reader, writer))), \
+                        patch('proxy.raw_websocket.set_sock_opts'):
+                    with self.assertRaises(type(error)):
+                        await RawWebSocket.connect('192.0.2.1', 'example.org')
+                writer.close.assert_called_once()
 
 
 if __name__ == '__main__':

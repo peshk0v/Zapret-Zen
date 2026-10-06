@@ -8,6 +8,7 @@ License-File: LICENSE
 Requires-Dist: PySide6>=6.7
 Requires-Dist: certifi>=2024.0.0
 Requires-Dist: cryptography>=46.0.0
+Requires-Dist: httpx[http2]>=0.28.1
 Requires-Dist: pydivert>=3.1.1
 Requires-Dist: pypresence>=4.6
 Provides-Extra: dev

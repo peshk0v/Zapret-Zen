@@ -1,8 +1,12 @@
 import os
+import asyncio
+import time
 import unittest
+from types import SimpleNamespace
 
 from proxy._aes import Cipher, algorithms, modes
-from proxy.bridge import MsgSplitter
+from proxy.bridge import MsgSplitter, bridge_ws_reencrypt
+from proxy.network_debug import WsActivity, log_ws_flow
 from proxy.utils import (
     PROTO_ABRIDGED_INT,
     PROTO_INTERMEDIATE_INT,
@@ -110,6 +114,91 @@ class MsgSplitterTest(unittest.TestCase):
         self.assertEqual(splitter.split(partial), [])
         self.assertEqual(splitter.flush(), [partial])
         self.assertEqual(splitter.flush(), [])
+
+
+class WsDiagnosticsTest(unittest.IsolatedAsyncioTestCase):
+    async def test_flow_distinguishes_upstream_send_from_native_backpressure(self):
+        class Cipher:
+            def update(self, data):
+                return data
+
+        class Socket:
+            def __init__(self):
+                self.queue = asyncio.Queue()
+                self.sending = asyncio.Event()
+                self.release = asyncio.Event()
+                self.sent = []
+
+            async def send(self, data):
+                self.sent.append(data)
+                self.sending.set()
+                await self.release.wait()
+
+            async def recv(self):
+                return await self.queue.get()
+
+            async def close(self):
+                pass
+
+        class Writer:
+            def __init__(self):
+                self.data = bytearray()
+                self.written = asyncio.Event()
+                self.release = asyncio.Event()
+
+            def write(self, data):
+                self.data.extend(data)
+                self.written.set()
+
+            async def drain(self):
+                await self.release.wait()
+
+            def close(self):
+                pass
+
+            async def wait_closed(self):
+                pass
+
+        ws, writer = Socket(), Writer()
+        reader = asyncio.StreamReader()
+        ctx = SimpleNamespace(clt_dec=Cipher(), clt_enc=Cipher(), tg_dec=Cipher(), tg_enc=Cipher())
+        with self.assertLogs('tg-mtproto-proxy', level='DEBUG') as captured:
+            bridge = asyncio.create_task(bridge_ws_reencrypt(reader, writer, ws, 'owned-test', ctx, dc=203))
+            try:
+                reader.feed_data(b'private-native-payload')
+                await asyncio.wait_for(ws.sending.wait(), 1)
+                activity = next(item for item in WsActivity.active if item.label == 'owned-test')
+                self.assertIsNotNone(activity.sending)
+                self.assertEqual(activity.ws_up, 0)
+                log_ws_flow(time.monotonic())
+                # A reply arriving before send drain finishes must not create
+                # a spurious wait for another response when drain resumes.
+                await ws.queue.put(b'private-upstream-payload')
+                await asyncio.wait_for(writer.written.wait(), 1)
+                self.assertEqual(activity.ws_down, len(writer.data))
+                self.assertEqual(activity.native_down, 0)
+                self.assertIsNotNone(activity.writing_native)
+                log_ws_flow(time.monotonic())
+                ws.release.set()
+                writer.release.set()
+                for _ in range(100):
+                    if activity.native_down and activity.ws_up:
+                        break
+                    await asyncio.sleep(.001)
+                self.assertEqual(activity.native_down, len(writer.data))
+                self.assertIsNone(activity.awaiting_rx)
+                self.assertEqual(ws.sent, [b'private-native-payload'])
+                self.assertEqual(bytes(writer.data), b'private-upstream-payload')
+                reader.feed_eof()
+                await asyncio.wait_for(bridge, 1)
+            finally:
+                bridge.cancel()
+                await asyncio.gather(bridge, return_exceptions=True)
+        self.assertFalse(WsActivity.active)
+        output = '\n'.join(captured.output)
+        self.assertIn('WS FLOW DC203', output)
+        self.assertIn('WS END DC203', output)
+        self.assertNotIn('private-', output)
 
 
 if __name__ == '__main__':

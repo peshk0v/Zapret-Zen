@@ -25,6 +25,7 @@ class RuntimeUpdateManager:
         is_image_running: Callable[[str], bool],
         rebuild_snapshot: Callable[[], None],
         tg_running: Callable[[], bool] | None = None,
+        probe_tgws_worker: Callable[[Path], tuple[bool, str]] | None = None,
     ) -> None:
         self.storage = storage
         self.logging = logging
@@ -34,6 +35,7 @@ class RuntimeUpdateManager:
         self._is_image_running = is_image_running
         self._rebuild_snapshot = rebuild_snapshot
         self._tg_running = tg_running
+        self._probe_tgws_worker = probe_tgws_worker
 
     def fetch_latest_zapret_release(self) -> dict[str, str]:
         api_url = "https://api.github.com/repos/Flowseal/zapret-discord-youtube/releases/latest"
@@ -195,6 +197,30 @@ class RuntimeUpdateManager:
                 shutil.rmtree(runtime_root, ignore_errors=True)
             shutil.copytree(source_root, runtime_root)
             self.storage.ensure_layout()
+            probe_ok, probe_error = self._verify_tgws_runtime(runtime_root)
+            if not probe_ok and backup is not None:
+                self._restore_tgws_backup(backup, runtime_root)
+                if was_running:
+                    try:
+                        self._start_component("tg-ws-proxy")
+                    except Exception as error:
+                        self.logging.log("warning", "TG WS Proxy restart after rollback failed", error=str(error))
+                self.logging.log(
+                    "error",
+                    "TG WS Proxy update rolled back",
+                    version=latest_version or current_version,
+                    error=probe_error,
+                    backup=str(backup),
+                )
+                return {"status": "rolled-back", "version": current_version, "error": probe_error}
+            if not probe_ok:
+                self.logging.log(
+                    "error",
+                    "TG WS Proxy update failed the startup probe",
+                    version=latest_version or current_version,
+                    error=probe_error,
+                )
+                return {"status": "error", "version": latest_version or current_version, "error": probe_error}
             self._rebuild_snapshot()
             if was_running:
                 try:
@@ -210,6 +236,21 @@ class RuntimeUpdateManager:
             return {"status": "updated", "version": latest_version or current_version}
         finally:
             shutil.rmtree(temp_root, ignore_errors=True)
+
+    def _verify_tgws_runtime(self, runtime_root: Path) -> tuple[bool, str]:
+        if self._probe_tgws_worker is None:
+            return True, ""
+        try:
+            return self._probe_tgws_worker(runtime_root)
+        except Exception as error:
+            return False, f"Worker probe raised an error: {error}"
+
+    def _restore_tgws_backup(self, backup: Path, runtime_root: Path) -> None:
+        source = backup / runtime_root.name
+        shutil.rmtree(runtime_root, ignore_errors=True)
+        shutil.copytree(source, runtime_root, dirs_exist_ok=True)
+        self.storage.ensure_layout()
+        self._rebuild_snapshot()
 
     def _find_extracted_tgws_root(self, extract_root: Path) -> Path | None:
         candidates = [extract_root]

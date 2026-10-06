@@ -216,6 +216,7 @@ class ProcessManager:
             is_image_running=self._is_image_running,
             rebuild_snapshot=self.rebuild_zapret_runtime_snapshot,
             tg_running=self._tg_worker_alive,
+            probe_tgws_worker=self.probe_tg_ws_proxy_worker,
         )
 
     def _tg_worker_alive(self) -> bool:
@@ -1165,10 +1166,7 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
             settings = self.settings.update(tg_proxy_secret=secret)
         # подчищаем старый процесс, если он остался в трее
         self._kill_image("TgWsProxy_windows.exe")
-        try:
-            (self.storage.paths.logs_dir / "tg_worker_error.log").unlink(missing_ok=True)
-        except Exception:
-            pass
+        self._clear_tg_worker_error_log()
         command = self._build_worker_command(
             "tg-ws-proxy",
             tg_host=settings.tg_proxy_host,
@@ -1208,12 +1206,9 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
             if exit_code is None:
                 exit_code = process.poll()
             error_hint = "TG WS Proxy worker did not open listening port."
-            worker_error_log = self.storage.paths.logs_dir / "tg_worker_error.log"
-            if worker_error_log.exists():
-                try:
-                    error_hint = worker_error_log.read_text(encoding="utf-8")[-1000:]
-                except Exception:
-                    pass
+            worker_error = self._read_tg_worker_error()
+            if worker_error:
+                error_hint = worker_error
             if exit_code is not None:
                 error_hint += f" (exit code: {exit_code})"
             try:
@@ -2774,6 +2769,81 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
                 return True
         except OSError:
             return False
+
+    def _tg_worker_error_log_path(self) -> Path:
+        return self.storage.paths.install_root / "logs" / "tg_worker_error.log"
+
+    def _clear_tg_worker_error_log(self) -> None:
+        try:
+            self._tg_worker_error_log_path().unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    def _read_tg_worker_error(self) -> str:
+        for path in (self._tg_worker_error_log_path(), self.storage.paths.logs_dir / "tg_worker_error.log"):
+            try:
+                if path.exists():
+                    return path.read_text(encoding="utf-8", errors="ignore")[-1000:].strip()
+            except Exception:
+                continue
+        return ""
+
+    def _find_free_local_port(self) -> int:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe_socket:
+            probe_socket.bind(("127.0.0.1", 0))
+            return int(probe_socket.getsockname()[1])
+
+    def probe_tg_ws_proxy_worker(self, runtime_root: Path) -> tuple[bool, str]:
+        """Запустить воркер из runtime_root на временном порту, чтобы проверить обновление до перезапуска компонента."""
+        if not (runtime_root / "proxy" / "tg_ws_proxy.py").exists():
+            return False, f"Worker entry point is missing in {runtime_root}"
+        try:
+            port = self._find_free_local_port()
+        except OSError as error:
+            return False, f"Could not reserve a local port for the worker probe: {error}"
+        self._clear_tg_worker_error_log()
+        command = self._build_worker_command(
+            "tg-ws-proxy",
+            tg_host="127.0.0.1",
+            tg_port=port,
+            tg_secret=secrets.token_hex(16),
+        )
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=str(self.storage.paths.install_root),
+                creationflags=self._creationflags,
+                startupinfo=self._startupinfo,
+                env=self._build_worker_env(),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception as error:
+            return False, f"Worker probe did not launch: {error}"
+        try:
+            for _ in range(24):
+                if process.poll() is not None:
+                    break
+                if self._is_port_listening("127.0.0.1", port):
+                    return True, ""
+                time.sleep(0.35)
+        finally:
+            if process.poll() is None:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+                try:
+                    process.wait(timeout=3)
+                except Exception:
+                    pass
+        exit_code = process.poll()
+        if exit_code is not None:
+            reason = f"Worker probe exited with code {exit_code}"
+        else:
+            reason = "Worker probe never opened its listening port"
+        details = self._read_tg_worker_error()
+        return False, f"{reason}. {details}".strip() if details else reason
 
     def _open_source_log_stream(self, source: str):
         self._close_source_log_stream(source)
