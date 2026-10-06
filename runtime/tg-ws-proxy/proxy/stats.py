@@ -5,6 +5,10 @@ class _Stats:
         self.connections_total = 0
         self.connections_active = 0
         self.connections_ws = 0
+        self.connections_h2 = 0
+        self.h2_tcp_connections = 0
+        self.h2_requests = 0
+        self.h2_errors = 0
         self.connections_tcp_fallback = 0
         self.connections_cfproxy = 0
         self.connections_fronting = 0
@@ -28,6 +32,10 @@ class _Stats:
         return (f"total={self.connections_total} "
                 f"active={self.connections_active} "
                 f"ws={self.connections_ws} "
+                f"h2={self.connections_h2} "
+                f"h2_tcp={self.h2_tcp_connections} "
+                f"h2_req={self.h2_requests} "
+                f"h2_err={self.h2_errors} "
                 f"tcp_fb={self.connections_tcp_fallback} "
                 f"cf={self.connections_cfproxy} "
                 f"front={self.connections_fronting} "

@@ -70,10 +70,16 @@ class ProxyConfig:
     fallback_cfproxy: bool = True
     cfproxy_user_domains: List[str] = field(default_factory=list)
     cfproxy_worker_domains: List[str] = field(default_factory=list)
+    cfproxy_h2_media: bool = True
     disable_secure: bool = False
     fake_tls_domain: str = ''
     proxy_protocol: bool = False
     force_test_dc: bool = False
+
+    @property
+    def h2_enabled(self) -> bool:
+        return (self.cfproxy_h2_media and self.fallback_cfproxy
+                and not self.disable_secure and not self.force_test_dc)
 
 
 proxy_config = ProxyConfig()

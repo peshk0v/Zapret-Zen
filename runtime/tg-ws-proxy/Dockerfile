@@ -15,7 +15,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-RUN "$VIRTUAL_ENV/bin/pip" install cryptography==46.0.5 certifi
+RUN "$VIRTUAL_ENV/bin/pip" install cryptography==46.0.5 certifi "httpx[http2]==0.28.1"
 
 FROM python:3.12-slim AS runtime
 

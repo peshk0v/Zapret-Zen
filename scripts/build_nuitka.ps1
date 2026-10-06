@@ -64,6 +64,16 @@ foreach ($pattern in $excludeFilePatterns) {
         Remove-Item -Force -ErrorAction SilentlyContinue
 }
 
+# tg-ws-proxy keeps its bridge domain list under .github/ and tg_proxy_tuner reads it as the
+# offline fallback, so put that single data file back after the .github cleanup.
+$cfDomainsSource = Join-Path $root "runtime" "tg-ws-proxy" ".github" "cfproxy-domains.txt"
+if (Test-Path $cfDomainsSource) {
+    $cfDomainsTarget = Join-Path $runtimeStage "tg-ws-proxy" ".github" "cfproxy-domains.txt"
+    New-Item -ItemType Directory -Path (Split-Path -Parent $cfDomainsTarget) -Force | Out-Null
+    Copy-Item -LiteralPath $cfDomainsSource -Destination $cfDomainsTarget -Force
+}
+
+
 $nuitkaArgs = @(
   "-m", "nuitka",
   "--standalone",

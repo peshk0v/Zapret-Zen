@@ -87,9 +87,9 @@ from ui.ctk_tray_ui import (
     install_tray_config_form,
     populate_first_run_window,
     tray_settings_scroll_and_footer,
-    validate_config_form,
 )
-from ui.i18n import set_language, t
+from ui.i18n import t
+from ui.settings_dialog import SettingsDialog
 from utils.tray_common import (
     APP_DIR,
     APP_NAME,
@@ -362,7 +362,6 @@ def _edit_config_dialog() -> None:
         pady=frame_pad_y,
     )
     scroll, footer = tray_settings_scroll_and_footer(ctk, frame, theme)
-    original_language = _config.get("language", DEFAULT_CONFIG["language"])
     log.info("Building settings form")
     widgets = install_tray_config_form(
         ctk,
@@ -371,14 +370,8 @@ def _edit_config_dialog() -> None:
         cfg,
         DEFAULT_CONFIG,
         show_autostart=False,
-        on_language_change=_refresh_tray_menu,
     )
     log.info("Settings form built")
-    original_appearance = ctk.get_appearance_mode()
-
-    def restore_ui_locale() -> None:
-        set_language(original_language)
-        _refresh_tray_menu()
 
     def finish() -> None:
         global _settings_window
@@ -386,70 +379,20 @@ def _edit_config_dialog() -> None:
         _settings_window = None
         _hide_ctk_root()
 
-    def cancel() -> None:
-        ctk.set_appearance_mode(original_appearance)
-        restore_ui_locale()
-        finish()
+    dialog = SettingsDialog(
+        ctk=ctk, root=root, widgets=widgets, config=_config,
+        defaults=DEFAULT_CONFIG, persist=save_config,
+        refresh_menu=_refresh_tray_menu, finish=finish,
+        restart=lambda config: restart_proxy(config, _show_error),
+    )
 
-    def save() -> None:
-        from tkinter import messagebox
-
-        merged = validate_config_form(
-            widgets,
-            DEFAULT_CONFIG,
-            include_autostart=False,
-        )
-        if isinstance(merged, str):
-            messagebox.showerror(t("app.error_title"), merged, parent=root)
-            return
-
-        merged["force_test_dc"] = _config.get(
-            "force_test_dc",
-            DEFAULT_CONFIG["force_test_dc"],
-        )
-        ui_only_keys = {"appearance", "check_updates", "language"}
-        config_changed = any(merged.get(key) != _config.get(key) for key in merged)
-        proxy_changed = any(
-            merged.get(key) != _config.get(key)
-            for key in merged
-            if key not in ui_only_keys
-        )
-
-        if not config_changed:
-            restore_ui_locale()
-            finish()
-            return
-
-        save_config(merged)
-        _config.update(merged)
-        set_language(merged.get("language", DEFAULT_CONFIG["language"]))
-        log.info("Config saved: %s", merged)
-        _refresh_tray_menu()
-
-        if not proxy_changed:
-            finish()
-            return
-
-        do_restart = messagebox.askyesno(
-            t("dialog.restart_title"),
-            t("dialog.restart_body"),
-            parent=root,
-        )
-        finish()
-        if do_restart:
-            threading.Thread(
-                target=lambda: restart_proxy(_config, _show_error),
-                daemon=True,
-                name="proxy-restart",
-            ).start()
-
-    root.protocol("WM_DELETE_WINDOW", cancel)
+    root.protocol("WM_DELETE_WINDOW", dialog.cancel)
     install_tray_config_buttons(
         ctk,
         footer,
         theme,
-        on_save=save,
-        on_cancel=cancel,
+        on_save=dialog.save,
+        on_cancel=dialog.cancel,
     )
     _activate_app()
     log.info("Settings window ready")

@@ -27,6 +27,8 @@ a = Analysis(
     binaries=appindicator_binaries,
     datas=[(ctk_path, 'customtkinter/'), (_i18n_path, 'ui/i18n')] + certifi_datas,
     hiddenimports=[
+        'httpx',
+        'h2',
         'pystray._appindicator',
         'PIL._tkinter_finder',
         'customtkinter',

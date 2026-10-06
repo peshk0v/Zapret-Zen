@@ -58,11 +58,11 @@ WS_PATH = '/apiws'
 WS_PATH_TEST = WS_PATH + '_test'
 
 
-def ws_domains(dc: int, is_media) -> List[str]:
+def ws_domains(dc: int, is_media: bool) -> List[str]:
     if dc == 203:
         dc = 2
     if not is_media:
-        return [f'kws{dc}.web.telegram.org', f'kws{dc}-1.web.telegram.org']
+        return [f'kws{dc}.web.telegram.org']
     return [f'kws{dc}-1.web.telegram.org', f'kws{dc}.web.telegram.org']
 
 
@@ -140,6 +140,13 @@ class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
             return super().https_open(req)
 
 
-def build_github_opener() -> urllib.request.OpenerDirector:
+def create_ssl_context(*, check_hostname: bool = True) -> ssl.SSLContext:
     context = ssl.create_default_context(cafile=certifi.where())
-    return urllib.request.build_opener(_PinnedHTTPSHandler(context=context))
+    context.load_default_certs()
+    context.check_hostname = check_hostname
+    return context
+
+
+def build_github_opener() -> urllib.request.OpenerDirector:
+    return urllib.request.build_opener(
+        _PinnedHTTPSHandler(context=create_ssl_context()))

@@ -20,6 +20,8 @@ a = Analysis(
     binaries=[],
     datas=[(ctk_path, 'customtkinter/'), (_i18n_path, 'ui/i18n')] + certifi_datas,
     hiddenimports=[
+        'httpx',
+        'h2',
         'pystray._win32',
         'PIL._tkinter_finder',
         'customtkinter',

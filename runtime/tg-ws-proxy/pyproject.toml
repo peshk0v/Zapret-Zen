@@ -37,6 +37,7 @@ classifiers = [
 dependencies = [
     "pyperclip==1.9.0",
     "certifi",
+    "httpx[http2]==0.28.1",
 
     "psutil==5.9.8; platform_system == 'Windows' and python_version < '3.9'",
     "cryptography==41.0.7; platform_system == 'Windows' and python_version < '3.9'",
