@@ -34,6 +34,7 @@ class DiagnosticsManager:
             self._check_components(),
             self._check_mods(),
             self._check_merged_config(),
+            self._check_dns_health(),
         ]
         self.logging.log("info", "Diagnostics executed", passed=sum(item.status == "ok" for item in results))
         return results
@@ -138,3 +139,32 @@ class DiagnosticsManager:
 
         message = "Merged Zapret runtime is available" if visible else "Active Zapret runtime is available"
         return DiagnosticResult("Merged runtime", "ok", message, {"path": str(root)})
+
+    def _check_dns_health(self) -> DiagnosticResult:
+        """Report whether the configured resolver is being poisoned by the ISP.
+
+        This is a non-destructive probe (see NetworkHealth.check). A poisoned resolver
+        silently breaks every bypassed site, so it is surfaced here so users can see it
+        before blaming the zapret strategy.
+        """
+        check = getattr(self.processes, "check_network_health", None)
+        if not callable(check):
+            return DiagnosticResult("DNS health", "ok", "DNS health check unavailable")
+        try:
+            report = check()
+        except Exception as error:
+            return DiagnosticResult("DNS health", "warning", f"DNS health check failed: {error}")
+        status = str(report.get("status", "unknown") or "unknown")
+        message = str(report.get("message", "") or "DNS status unknown")
+        details = {
+            "canary": str(report.get("canary", "")),
+            "control": str(report.get("control", "")),
+            "gateway": str(report.get("gateway", "")),
+            "canary_ok": bool(report.get("canary_ok", False)),
+            "control_ok": bool(report.get("control_ok", False)),
+        }
+        if status == "ok":
+            return DiagnosticResult("DNS health", "ok", message, details)
+        if status in ("poisoned", "broken"):
+            return DiagnosticResult("DNS health", "warning", message, details)
+        return DiagnosticResult("DNS health", "warning", message, details)

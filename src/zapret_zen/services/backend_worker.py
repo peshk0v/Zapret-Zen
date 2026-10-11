@@ -427,6 +427,16 @@ def _handle_start_enabled_components(context, payload, emit_progress):
     states = {item.component_id: item for item in context.processes.list_states()}
     started: list[str] = []
     skipped: list[str] = []
+    # DNS self-heal: a poisoned resolver silently breaks every bypassed site, so make
+    # sure DNS is healthy before we start the bypass. Best-effort and never blocks start.
+    will_start_zapret = any(
+        c.id == "zapret" and c.enabled and not (autostart_only and not c.autostart) for c in components
+    )
+    if will_start_zapret and bool(getattr(context.settings.get(), "self_heal_enabled", True)):
+        try:
+            context.processes.run_network_self_heal(repair=True)
+        except Exception:
+            pass
     for component in components:
         if component.id == "dns-manager":
             continue
@@ -1097,6 +1107,15 @@ def _handle_run_general_diagnostics(context, payload, emit_progress):
         stop_callback=(lambda: bool(cancel_path) and os.path.exists(cancel_path)),
     )
     return {"results": results}
+
+
+@_register_action("run_network_self_heal")
+def _handle_run_network_self_heal(context, payload, emit_progress):
+    repair = True
+    if isinstance(payload, dict) and "repair" in payload:
+        repair = bool(payload.get("repair"))
+    report = context.processes.run_network_self_heal(repair=repair)
+    return {"report": report}
 
 
 @_register_action("run_general_diagnostic_single")

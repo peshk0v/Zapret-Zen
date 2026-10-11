@@ -97,6 +97,26 @@ def bootstrap_application() -> ApplicationContext:
     autostart = AutostartManager(logging)
     processes = ProcessManager(storage, logging, settings)
     notifications = NotificationManager(storage)
+
+    def _on_dns_self_heal(report: dict[str, Any]) -> None:
+        canary = str(report.get("canary", "") or "blocked sites")
+        gateway = str(report.get("gateway", "") or "")
+        try:
+            notifications.add(
+                "success",
+                "DNS self-heal",
+                f"Poisoned DNS was detected and repaired automatically. {canary} resolves again"
+                + (f" via router {gateway}." if gateway else "."),
+                source="app",
+                details={"dedupe_key": "network_self_heal_dns", **report},
+            )
+        except Exception:
+            pass
+
+    try:
+        processes.network_health._notify_callback = _on_dns_self_heal
+    except Exception:
+        pass
     merge = MergeEngine(storage, logging, settings)
     mods = ModsManager(storage, logging, merge, settings, processes=processes)
     diagnostics = DiagnosticsManager(storage, logging, processes, mods, merge)

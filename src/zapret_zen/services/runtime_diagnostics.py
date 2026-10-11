@@ -27,6 +27,7 @@ class RuntimeDiagnostics:
         run_batch_connectivity_check: Callable[..., dict[str, object]] | None = None,
         reset_batch_state: Callable[[], None] | None = None,
         set_diagnostic_override: Callable[[bool], None] | None = None,
+        dns_preflight: Callable[[], dict[str, object]] | None = None,
     ) -> None:
         self.logging = logging
         self.settings = settings
@@ -40,7 +41,33 @@ class RuntimeDiagnostics:
         self._run_batch_connectivity_check = run_batch_connectivity_check
         self._reset_batch_state = reset_batch_state
         self._set_diagnostic_override = set_diagnostic_override
+        self._dns_preflight = dns_preflight
         self._diagnostic_runtime_override = False
+
+    def _run_dns_preflight(self) -> None:
+        """Validate/repair DNS once before a connectivity sweep.
+
+        A poisoned resolver makes every target return 000 and the autotest would then
+        blame the strategy. Running the DNS self-heal preflight first keeps the results
+        meaningful. Best-effort: never raises into the autotest flow.
+        """
+        if self._dns_preflight is None:
+            return
+        try:
+            report = self._dns_preflight()
+        except Exception as error:
+            self.logging.log("warning", "DNS preflight raised", error=str(error))
+            return
+        if isinstance(report, dict) and report:
+            status = str(report.get("status", ""))
+            if status not in ("ok", ""):
+                self.logging.log(
+                    "info",
+                    "DNS preflight completed before diagnostics",
+                    status=status,
+                    repaired=bool(report.get("repaired")),
+                    message=str(report.get("message", "")),
+                )
 
     def _set_runtime_override(self, value: bool) -> None:
         self._diagnostic_runtime_override = value
@@ -76,6 +103,7 @@ class RuntimeDiagnostics:
         return original_running
 
     def auto_select_working_general(self) -> dict[str, object] | None:
+        self._run_dns_preflight()
         options = self._list_zapret_generals()
         if not options:
             return None
@@ -115,6 +143,7 @@ class RuntimeDiagnostics:
         progress_callback: Callable | None = None,
         stop_callback: Callable | None = None,
     ) -> dict[str, object]:
+        self._run_dns_preflight()
         options = {item["id"]: item for item in self._list_zapret_generals()}
         option = options.get(general_id)
         if option is None:
@@ -161,6 +190,7 @@ class RuntimeDiagnostics:
         result_callback: Callable | None = None,
         stop_callback: Callable | None = None,
     ) -> list[dict[str, object]]:
+        self._run_dns_preflight()
         options_map = {item["id"]: item for item in self._list_zapret_generals()}
         settings_snapshot = self.capture_diagnostic_settings()
         original_running = self._is_image_running("winws.exe")
@@ -239,6 +269,7 @@ class RuntimeDiagnostics:
         progress_callback: Callable | None = None,
         stop_callback: Callable | None = None,
     ) -> list[dict[str, str]]:
+        self._run_dns_preflight()
         options = self._list_zapret_generals()
         if not options:
             return []
@@ -308,6 +339,7 @@ class RuntimeDiagnostics:
         progress_callback: Callable | None = None,
         stop_callback: Callable | None = None,
     ) -> dict[str, object]:
+        self._run_dns_preflight()
         original = self.settings.get()
         general_id = str(original.selected_zapret_general or "").strip()
         if not general_id:

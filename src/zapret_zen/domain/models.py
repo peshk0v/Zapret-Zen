@@ -61,6 +61,8 @@ class AppSettings:
     selected_dns_preset: str = ""
     dns_custom_server: bool = False
     dns_custom_doh: str = ""
+    self_heal_enabled: bool = True
+    self_heal_repair_count: int = 0
     apply_update_on_next_launch: bool = False
     dismissed_app_update_key: str = ""
     dismissed_component_updates: dict[str, str] = field(default_factory=dict)

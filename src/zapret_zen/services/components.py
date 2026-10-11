@@ -28,6 +28,7 @@ from zapret_zen.domain import ComponentDefinition, ComponentState
 from zapret_zen.runtime_env import is_packaged_runtime
 from zapret_zen.services.github_network import GitHubNetworkClient, is_recoverable_github_error
 from zapret_zen.services.logging_service import LoggingManager
+from zapret_zen.services.network_health import NetworkHealth, is_dangling_binary_path, service_binary_path
 from zapret_zen.services.service_catalog import ALWAYS_APPLY_SERVICE_IDS
 from zapret_zen.services.service_rules import SERVICE_RULES
 from zapret_zen.services.settings import SettingsManager
@@ -196,6 +197,10 @@ class ProcessManager:
             is_image_running=self._is_image_running,
             list_zapret_generals=self.list_zapret_generals,
         )
+        self.network_health = NetworkHealth(
+            logging, settings,
+            dns_reset=self._reset_dns_to_dhcp,
+        )
         self.diagnostics = RuntimeDiagnostics(
             logging, settings,
             stop_component=self.stop_component,
@@ -208,6 +213,7 @@ class ProcessManager:
             run_batch_connectivity_check=self._run_batch_connectivity_check,
             reset_batch_state=self._reset_batch_state,
             set_diagnostic_override=self._set_diagnostic_runtime_override,
+            dns_preflight=self._self_heal_preflight,
         )
         self.updates = RuntimeUpdateManager(
             storage, logging, self.github,
@@ -1273,6 +1279,46 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
             return bool(data.get("active", False))
         except (json.JSONDecodeError, OSError):
             return False
+
+    def _reset_dns_to_dhcp(self) -> None:
+        """Reset every active adapter back to DHCP DNS and clear sticky registry values.
+
+        Used by NetworkHealth self-heal when the ISP is caught poisoning DNS answers.
+        Mirrors the proven repair from the original incident: reset to the router's DHCP
+        resolver and clear the per-interface NameServer value that keeps a poisoned
+        resolver sticky.
+        """
+        dns = self._import_dns_manager()
+        dns.reset_windows_dns()
+
+    def _self_heal_preflight(self) -> dict[str, object]:
+        """DNS health check+repair run before the bypass starts or an autotest runs.
+
+        Without this, a poisoned resolver makes every connectivity target return 000 and
+        the strategy autotest reports a false negative (it blames the strategy for what is
+        actually a DNS problem). Returns the DNS health report.
+        """
+        try:
+            return self.network_health.preflight()
+        except Exception as error:
+            self.logging.log("warning", "DNS self-heal preflight failed", error=str(error))
+            return {"status": "unknown", "message": str(error), "repaired": False}
+
+    def check_network_health(self) -> dict[str, object]:
+        """Non-destructive DNS health probe (used by the diagnostics page)."""
+        try:
+            return self.network_health.check()
+        except Exception as error:
+            self.logging.log("warning", "Network health check failed", error=str(error))
+            return {"status": "unknown", "message": str(error)}
+
+    def run_network_self_heal(self, *, repair: bool = True) -> dict[str, object]:
+        """Run DNS self-heal (optionally forcing a repair) and return the report."""
+        try:
+            return self.network_health.preflight(repair=repair)
+        except Exception as error:
+            self.logging.log("warning", "Network self-heal failed", error=str(error))
+            return {"status": "unknown", "message": str(error), "repaired": False}
 
     def _start_dns_manager(self, component_id: str) -> ComponentState:
         settings = self.settings.get()
@@ -2668,9 +2714,20 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
                 image_path = self._service_image_path(service_name)
                 if not image_path:
                     continue
-                if image_path and runtime_root is not None and not self._path_mentions_runtime(image_path, runtime_root):
+                # Orphaned driver services point at a runtime folder that has since been
+                # deleted (e.g. a previous _active_N). They can never start again and only
+                # produce "service already exists" errors on the next bypass start, so we
+                # always clean them up regardless of which runtime is currently selected.
+                if is_dangling_binary_path(service_binary_path(image_path)):
+                    self.logging.log(
+                        "info",
+                        "Removing orphaned driver service with dangling binary path",
+                        service_name=service_name,
+                        image_path=image_path,
+                    )
+                elif runtime_root is not None and not self._path_mentions_runtime(image_path, runtime_root):
                     continue
-                if image_path and runtime_root is None and not self._path_mentions_runtime(
+                elif runtime_root is None and not self._path_mentions_runtime(
                     image_path,
                     self.storage.paths.install_root,
                 ):
