@@ -88,13 +88,75 @@
             padding: 0;
         }
 
+        html {
+            scroll-behavior: smooth;
+            scroll-padding-top: 90px; /* Компенсируем высоту липкого хедера при якорях */
+        }
+
         body {
             background-color: var(--bg-color);
             color: var(--on-surface);
             font-family: var(--font-body);
             line-height: 1.6;
             overflow-x: hidden;
-            scroll-behavior: smooth;
+            position: relative;
+        }
+
+        /* Общие контейнеры фоновых динамических шаров */
+        .blob-container {
+            position: fixed;
+            z-index: -1;
+            pointer-events: none;
+            will-change: transform;
+            transition: transform 0.25s cubic-bezier(0.1, 0.7, 0.1, 1);
+        }
+
+        /* Первый шар — Основной (справа сверху) */
+        .blob-container-1 {
+            top: -100px;
+            right: -50px;
+            width: 650px;
+            height: 650px;
+        }
+
+        .bg-blob-1 {
+            width: 100%;
+            height: 100%;
+            background: var(--primary);
+            opacity: 0.22;
+            filter: blur(140px);
+            border-radius: 50%;
+            animation: blob-idle-1 12s ease-in-out infinite alternate;
+        }
+
+        /* Второй шар — Акцентный (слева снизу) */
+        .blob-container-2 {
+            top: 40vh;
+            left: -150px;
+            width: 550px;
+            height: 550px;
+        }
+
+        .bg-blob-2 {
+            width: 100%;
+            height: 100%;
+            background: var(--primary-container);
+            opacity: 0.28;
+            filter: blur(150px);
+            border-radius: 50%;
+            animation: blob-idle-2 15s ease-in-out infinite alternate;
+        }
+
+        @keyframes blob-idle-1 {
+            0% { transform: translate(0px, 0px) scale(1); }
+            50% { transform: translate(-80px, 100px) scale(1.15); }
+            100% { transform: translate(60px, -60px) scale(0.9); }
+        }
+
+        @keyframes blob-idle-2 {
+            0% { transform: translate(0px, 0px) scale(1); }
+            50% { transform: translate(100px, -70px) scale(1.2); }
+            100% { transform: translate(-50px, 80px) scale(0.85); }
         }
 
         code, pre {
@@ -233,18 +295,19 @@
             transform: translateY(-3px);
         }
 
-        /* Светлая кнопка в хедере поверх синего фона */
         header .btn-header {
-            background-color: rgba(255, 255, 255, 0.15);
+            background-color: rgba(255, 255, 255, 0.12);
             color: #ffffff;
             border: 1px solid rgba(255, 255, 255, 0.2);
-            backdrop-filter: blur(4px);
+            backdrop-filter: blur(8px);
         }
 
         header .btn-header:hover {
-            background-color: #ffffff;
-            color: var(--on-primary-container);
+            background-color: rgba(255, 255, 255, 0.25);
+            color: #ffffff;
+            border-color: rgba(255, 255, 255, 0.4);
             transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
         }
 
         .dropdown {
@@ -692,7 +755,7 @@
             justify-content: center;
             color: var(--on-surface);
         }
-
+        
         .recommended .mirror-icon {
             background: var(--success);
             color: var(--on-success);
@@ -757,7 +820,7 @@
             text-decoration: none;
             transition: color 0.2s;
         }
-
+        
         footer a:hover {
             color: var(--on-primary-container);
         }
@@ -765,10 +828,20 @@
         @media (max-width: 768px) {
             .hero h1 { font-size: 2.5rem; }
             .nav-links { display: none; }
+            .blob-container-1 { width: 450px; height: 450px; }
+            .blob-container-2 { width: 380px; height: 380px; }
         }
     </style>
 </head>
 <body>
+
+    <!-- Динамические фоновые размытые шары -->
+    <div class="blob-container blob-container-1" id="blobContainer1">
+        <div class="bg-blob-1"></div>
+    </div>
+    <div class="blob-container blob-container-2" id="blobContainer2">
+        <div class="bg-blob-2"></div>
+    </div>
 
     <header>
         <div class="nav-container">
@@ -793,7 +866,7 @@
         <img src="ds_icon.png" alt="Zapret Zen Icon" class="hero-banner">
         <h1>Zapret Zen</h1>
         <p>Удобная и быстрая утилита для обхода блокировок на Windows в дизайне Material You. Поддержка пресетов, модов и умной автонастройки.</p>
-
+        
         <div class="hero-cta">
             <a href="#download" class="btn btn-primary">
                 <span class="material-symbols-outlined">download</span>
@@ -885,7 +958,7 @@
                         <li>Запустите файл <code>zapret_zen.exe</code>.</li>
                     </ol>
                 </div>
-
+                
                 <div class="dropdown" id="portable-dropdown">
                     <button class="btn btn-primary dropdown-toggle">
                         <span class="material-symbols-outlined">folder_zip</span>
@@ -947,7 +1020,7 @@
                 <h3>Загрузка файла</h3>
                 <p>Выберите наиболее быстрое зеркало для вашего региона.</p>
             </div>
-
+            
             <div class="mirrors-grid">
                 <a id="link-gh" href="#" target="_blank" class="mirror-card" onclick="closeMirrorModal()">
                     <div class="badge-recommended">Рекомендовано</div>
@@ -982,13 +1055,30 @@
                     </div>
                     <span class="material-symbols-outlined" style="color: var(--on-surface-variant);">download</span>
                 </a>
+
+                <a id="link-cb" href="#" target="_blank" class="mirror-card" onclick="closeMirrorModal()">
+                    <div class="badge-recommended">Рекомендовано</div>
+                    <div class="mirror-info">
+                        <div class="mirror-icon">
+                            <span class="material-symbols-outlined">hub</span>
+                        </div>
+                        <div class="mirror-text">
+                            <span class="mirror-name">Codeberg</span>
+                            <span class="mirror-ping" id="ping-cb-text">
+                                <span class="material-symbols-outlined">sync</span>
+                                измеряем...
+                            </span>
+                        </div>
+                    </div>
+                    <span class="material-symbols-outlined" style="color: var(--on-surface-variant);">download</span>
+                </a>
             </div>
         </div>
     </div>
 
     <script>
         let latestReleaseTag = '';
-
+        
         const releaseFiles = {
             installer: { githubUrl: '', filename: '' },
             x64: { githubUrl: '', filename: '' },
@@ -1033,14 +1123,33 @@
             fetchLatestRelease();
         });
 
+        // Движение фоновых шаров при скролле страницы
+        window.addEventListener('scroll', () => {
+            const scrollY = window.scrollY;
+            const blob1 = document.getElementById('blobContainer1');
+            const blob2 = document.getElementById('blobContainer2');
+            
+            if (blob1) {
+                const moveX1 = Math.sin(scrollY * 0.002) * 140;
+                const moveY1 = scrollY * 0.25;
+                blob1.style.transform = `translate(${moveX1}px, ${moveY1}px)`;
+            }
+
+            if (blob2) {
+                const moveX2 = Math.cos(scrollY * 0.002) * -120;
+                const moveY2 = scrollY * 0.18;
+                blob2.style.transform = `translate(${moveX2}px, ${moveY2}px)`;
+            }
+        });
+
         async function fetchLatestRelease() {
             try {
                 const response = await fetch('https://api.github.com/repos/peshk0v/Zapret-Zen/releases/latest');
                 if (!response.ok) return;
                 const releaseData = await response.json();
-
+                
                 latestReleaseTag = releaseData.tag_name;
-
+                
                 const versionBadge = document.getElementById('latest-version-badge');
                 if (versionBadge && latestReleaseTag) {
                     versionBadge.textContent = `(${latestReleaseTag})`;
@@ -1068,7 +1177,7 @@
                 const start = performance.now();
                 const img = new Image();
                 const timeout = setTimeout(() => resolve(9999), 3000);
-
+                
                 img.onload = img.onerror = () => {
                     clearTimeout(timeout);
                     resolve(Math.round(performance.now() - start));
@@ -1080,7 +1189,7 @@
         async function openMirrorModal(type) {
             const modal = document.getElementById('mirror-modal');
             const fileData = releaseFiles[type];
-
+            
             if (!fileData || !fileData.filename) {
                 window.open('https://github.com/peshk0v/Zapret-Zen/releases/latest', '_blank');
                 return;
@@ -1088,34 +1197,44 @@
 
             const ghLink = document.getElementById('link-gh');
             const sfLink = document.getElementById('link-sf');
+            const cbLink = document.getElementById('link-cb');
+            
             const ghPingText = document.getElementById('ping-gh-text');
             const sfPingText = document.getElementById('ping-sf-text');
+            const cbPingText = document.getElementById('ping-cb-text');
 
             ghLink.classList.remove('recommended');
             sfLink.classList.remove('recommended');
-
+            cbLink.classList.remove('recommended');
+            
             ghPingText.innerHTML = `<span class="material-symbols-outlined ping-loading">sync</span> измеряем...`;
             sfPingText.innerHTML = `<span class="material-symbols-outlined ping-loading">sync</span> измеряем...`;
+            cbPingText.innerHTML = `<span class="material-symbols-outlined ping-loading">sync</span> измеряем...`;
 
             ghLink.href = fileData.githubUrl;
-
             sfLink.href = `https://sourceforge.net/projects/zapret-zen/files/${encodeURIComponent(latestReleaseTag)}/${encodeURIComponent(fileData.filename)}/download`;
+            cbLink.href = `https://codeberg.org/peshk0v/Zapret-Zen/releases/download/${encodeURIComponent(latestReleaseTag)}/${encodeURIComponent(fileData.filename)}`;
 
             modal.classList.add('active');
 
-            const [ghPing, sfPing] = await Promise.all([
+            const [ghPing, sfPing, cbPing] = await Promise.all([
                 measurePing('https://github.com/favicon.ico'),
-                measurePing('https://sourceforge.net/favicon.ico')
+                measurePing('https://sourceforge.net/favicon.ico'),
+                measurePing('https://codeberg.org/favicon.ico')
             ]);
 
             ghPingText.innerHTML = `<span class="material-symbols-outlined">network_ping</span> ${ghPing < 9999 ? ghPing + ' ms' : 'ошибка'}`;
             sfPingText.innerHTML = `<span class="material-symbols-outlined">network_ping</span> ${sfPing < 9999 ? sfPing + ' ms' : 'ошибка'}`;
+            cbPingText.innerHTML = `<span class="material-symbols-outlined">network_ping</span> ${cbPing < 9999 ? cbPing + ' ms' : 'ошибка'}`;
 
-            if (ghPing < 9999 || sfPing < 9999) {
-                if (ghPing <= sfPing) {
+            const minPing = Math.min(ghPing, sfPing, cbPing);
+            if (minPing < 9999) {
+                if (minPing === ghPing) {
                     ghLink.classList.add('recommended');
-                } else {
+                } else if (minPing === sfPing) {
                     sfLink.classList.add('recommended');
+                } else {
+                    cbLink.classList.add('recommended');
                 }
             }
         }
