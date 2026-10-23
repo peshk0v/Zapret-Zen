@@ -8,11 +8,12 @@ import threading
 logger = logging.getLogger(__name__)
 
 APP_ID = "1539264958054006825"
+RPC_DETAIL = "Использует для обхода блокировок"
 
 
 class DiscordRPCService:
     def __init__(self) -> None:
-        self._detail = "Использует для обхода блокировок"
+        self._detail = RPC_DETAIL
         self._running = False
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -21,8 +22,7 @@ class DiscordRPCService:
     def is_running(self) -> bool:
         return self._running
 
-    def configure(self, enabled: bool, detail: str) -> None:
-        self._detail = detail
+    def configure(self, enabled: bool) -> None:
         if enabled and not self._running:
             self.start()
         elif not enabled and self._running:
@@ -48,9 +48,6 @@ class DiscordRPCService:
         self._thread = None
         logger.info("Discord RPC: stopped")
 
-    def update_presence(self, detail: str | None = None) -> None:
-        self._detail = detail or self._detail
-
     def _connect(self):
         import pypresence
         rpc = pypresence.Presence(APP_ID)
@@ -64,7 +61,7 @@ class DiscordRPCService:
                 large_image="ds_icon",
                 large_text="Zapret Zen",
                 buttons=[
-                    {"label": "Подробнее", "url": "https://peshk0v.github.io/Zapret-Zen/"},
+                    {"label": "Подробнее", "url": "https://zapret-zen.neocities.org/"},
                 ],
             )
             logger.info("Discord RPC: presence set (detail=%s)", detail)

@@ -21,6 +21,8 @@ _st_BBQ4s = struct.Struct('>BBQ4s')
 _st_H = struct.Struct('>H')
 _st_Q = struct.Struct('>Q')
 
+_XOR_TABLES = tuple(bytes(value ^ key for value in range(256)) for key in range(256))
+
 _ssl_ctx = create_ssl_context()
 _ssl_ctx_fronting = create_ssl_context(check_hostname=False)
 
@@ -42,6 +44,11 @@ def _xor_mask(data: bytes, mask: bytes) -> bytes:
     if not data:
         return data
     n = len(data)
+    if n >= 512:
+        masked = bytearray(data)
+        for offset in range(4):
+            masked[offset::4] = masked[offset::4].translate(_XOR_TABLES[mask[offset]])
+        return bytes(masked)
     mask_rep = (mask * (n // 4 + 1))[:n]
     return (int.from_bytes(data, 'big') ^
             int.from_bytes(mask_rep, 'big')).to_bytes(n, 'big')

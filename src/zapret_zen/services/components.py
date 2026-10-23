@@ -28,6 +28,7 @@ from zapret_zen.domain import ComponentDefinition, ComponentState
 from zapret_zen.runtime_env import is_packaged_runtime
 from zapret_zen.services.github_network import GitHubNetworkClient, is_recoverable_github_error
 from zapret_zen.services.logging_service import LoggingManager
+from zapret_zen.services.process_compat import decode_process_output
 from zapret_zen.services.service_catalog import ALWAYS_APPLY_SERVICE_IDS
 from zapret_zen.services.service_rules import SERVICE_RULES
 from zapret_zen.services.settings import SettingsManager
@@ -977,15 +978,15 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
                 script,
             ],
             capture_output=True,
-            text=True,
             check=False,
             creationflags=self._creationflags,
             startupinfo=startup,
         )
+        stderr = decode_process_output(proc.stderr)
         if proc.returncode != 0:
-            self.logging.log("warning", "PowerShell helper failed", stderr=(proc.stderr or "").strip()[-1000:])
+            self.logging.log("warning", "PowerShell helper failed", stderr=stderr.strip()[-1000:])
             return ""
-        return (proc.stdout or "").strip()
+        return decode_process_output(proc.stdout).strip()
 
     def _looks_like_ip_address(self, value: str) -> bool:
         candidate = value.strip()
@@ -2754,13 +2755,21 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
         return runtime_text in raw
 
     def _run_quiet(self, command: list[str]) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
+        # NB: no text=True — Windows tools print the OEM codepage, while
+        # Python 3.14+ would decode it as UTF-8 and crash the reader
+        # thread (stdout becomes None). Decode manually instead.
+        proc = subprocess.run(
             command,
             capture_output=True,
-            text=True,
             check=False,
             creationflags=self._creationflags,
             startupinfo=self._startupinfo,
+        )
+        return subprocess.CompletedProcess(
+            command,
+            proc.returncode,
+            stdout=decode_process_output(proc.stdout),
+            stderr=decode_process_output(proc.stderr),
         )
 
     def _is_port_listening(self, host: str, port: int) -> bool:

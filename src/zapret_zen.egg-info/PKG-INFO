@@ -25,19 +25,21 @@ Dynamic: license-file
 
 # Zapret Zen
 
-**Утилита для удобного и быстрого обхода блокировок на Windows**
+**Утилита для удобного и быстрого обхода замедлений на Windows**
 
 <a href="https://peshk0v.github.io/Zapret-Zen/">
   <img src="https://img.shields.io/badge/Официальный_Сайт-Zapret--Zen-42a5f5?style=for-the-badge&logo=github" alt="Официальный сайт проекта" />
-</a>
-<a href="https://github-store.org/app?repo=peshk0v/Zapret-Zen">
-  <img src="https://img.shields.io/badge/Komi_Store-Zapret--Zen-0078D4?style=for-the-badge&logo=github" alt="Komi Store" />
 </a>
 
 [![Version](https://img.shields.io/github/v/release/peshk0v/Zapret-Zen?style=for-the-badge&logo=github&color=5865F2&label=Версия)](https://github.com/peshk0v/Zapret-Zen/releases)
 [![Views](https://img.shields.io/endpoint?url=https://hits.dwyl.com/peshk0v/Zapret-Zen.json&style=for-the-badge&color=42a5f5&label=Просмотров)](https://github.com/peshk0v/Zapret-Zen)
 [![Downloads](https://img.shields.io/github/downloads/peshk0v/Zapret-Zen/total?style=for-the-badge&color=2ea44f&label=Скачиваний)](https://github.com/peshk0v/Zapret-Zen/releases)
 [![License](https://img.shields.io/github/license/peshk0v/Zapret-Zen?style=for-the-badge&color=E0A96D&label=Лицензия)](LICENSE)
+
+[![SourceForge](https://img.shields.io/badge/SourceForge-Download-FF6600?style=for-the-badge&logo=sourceforge&logoColor=white)](https://sourceforge.net/projects/zapret-zen/files/latest/download)
+[![Komi Store](https://img.shields.io/badge/Komi_Store-Download-red?style=for-the-badge)](https://github-store.org/app?repo=peshk0v/Zapret-Zen)
+[![Codeberg](https://img.shields.io/badge/Codeberg-Releases-2185D0?style=for-the-badge&logo=codeberg&logoColor=white)](https://codeberg.org/peshk0v/Zapret-Zen/releases)
+[![GitHub](https://img.shields.io/badge/GitHub-Releases-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/peshk0v/Zapret-Zen/releases)
 
 </div>
 
@@ -57,7 +59,7 @@ Dynamic: license-file
 
 | Функция | Описание |
 | :--- | :--- |
-| 🛡️ **Обход блокировок** | Управление компонентами `zapret` и `tg-ws-proxy`: запуск, остановка, просмотр статуса, фоновый автозапуск |
+| 🛡️ **Обход** | Управление компонентами `zapret` и `tg-ws-proxy`: запуск, остановка, просмотр статуса, фоновый автозапуск |
 | 👤 **Профили настроек** | Быстрое переключение между готовыми конфигурациями и пресетами под разные задачи и сети |
 | 🎛️ **Пресеты сервисов** | Быстрый и удобный выбор сервисов, разбитых по категориям |
 | 🧩 **Система модов** | Установка, обновление и отключение пользовательских модов сообщества для расширения правил |
@@ -73,7 +75,7 @@ Dynamic: license-file
 
 ## 🧩 Доверенные моды сообщества
 
-Готовые модификации для Zapret-Zen от сообщества: обход блокировок Fortnite, Minecraft, Roblox, SoundCloud, Canva и других сервисов.
+Готовые модификации для Zapret-Zen от сообщества: обход замедлений Fortnite, Minecraft, Roblox, SoundCloud, Canva и других сервисов.
 
 > Подробная инструкция по установке, созданию и публикации собственных модов — в **[документации по модам](https://github.com/peshk0v/Zapret-Zen/wiki/%D0%9C%D0%BE%D0%B4%D0%B8%D1%84%D0%B8%D0%BA%D0%B0%D1%86%D0%B8%D0%B8#13-доверенные-каталоги-модов-от-сообщества)**.
 

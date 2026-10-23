@@ -3,6 +3,7 @@ import asyncio
 import time
 import unittest
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 from proxy._aes import Cipher, algorithms, modes
 from proxy.bridge import MsgSplitter, bridge_ws_reencrypt
@@ -40,9 +41,10 @@ def _intermediate(payload: bytes) -> bytes:
 class MsgSplitterTest(unittest.TestCase):
     def _split(self, proto_int, packets, chunk_sizes=None):
         relay_init = _relay_init()
-        splitter = MsgSplitter(relay_init, proto_int)
+        splitter = MsgSplitter(proto_int)
         enc = _encryptor(relay_init)
-        stream = enc.update(b''.join(packets))
+        plain = b''.join(packets)
+        stream = enc.update(plain)
 
         chunks = []
         if chunk_sizes is None:
@@ -56,8 +58,10 @@ class MsgSplitterTest(unittest.TestCase):
                 chunks.append(stream[offset:])
 
         parts = []
+        offset = 0
         for chunk in chunks:
-            parts.extend(splitter.split(chunk))
+            parts.extend(splitter.split(chunk, plain[offset:offset + len(chunk)]))
+            offset += len(chunk)
         return splitter, stream, parts
 
     def test_abridged_stream_splits_into_packets(self):
@@ -94,26 +98,76 @@ class MsgSplitterTest(unittest.TestCase):
         self.assertEqual(len(parts), 8)
 
     def test_empty_chunk_yields_nothing(self):
-        splitter = MsgSplitter(_relay_init(), PROTO_INTERMEDIATE_INT)
-        self.assertEqual(splitter.split(b''), [])
+        splitter = MsgSplitter(PROTO_INTERMEDIATE_INT)
+        self.assertEqual(splitter.split(b'', b''), [])
 
     def test_zero_length_packet_disables_splitting(self):
         relay_init = _relay_init()
-        splitter = MsgSplitter(relay_init, PROTO_INTERMEDIATE_INT)
+        splitter = MsgSplitter(PROTO_INTERMEDIATE_INT)
         enc = _encryptor(relay_init)
-        stream = enc.update((0).to_bytes(4, 'little') + b'tail')
-        parts = splitter.split(stream)
+        plain = (0).to_bytes(4, 'little') + b'tail'
+        stream = enc.update(plain)
+        parts = splitter.split(stream, plain)
         self.assertEqual(parts, [stream])
-        self.assertEqual(splitter.split(b'raw'), [b'raw'])
+        self.assertEqual(splitter.split(b'raw', b'raw'), [b'raw'])
 
     def test_flush_returns_buffered_tail_once(self):
         relay_init = _relay_init()
-        splitter = MsgSplitter(relay_init, PROTO_INTERMEDIATE_INT)
+        splitter = MsgSplitter(PROTO_INTERMEDIATE_INT)
         enc = _encryptor(relay_init)
-        partial = enc.update(_intermediate(b'x' * 32)[:10])
-        self.assertEqual(splitter.split(partial), [])
+        plain = _intermediate(b'x' * 32)[:10]
+        partial = enc.update(plain)
+        self.assertEqual(splitter.split(partial, plain), [])
         self.assertEqual(splitter.flush(), [partial])
         self.assertEqual(splitter.flush(), [])
+
+    def test_extended_and_quick_ack_headers_can_cross_chunk_boundaries(self):
+        for proto, frame in ((PROTO_ABRIDGED_INT, _abridged),
+                             (PROTO_INTERMEDIATE_INT, _intermediate),
+                             (PROTO_PADDED_INTERMEDIATE_INT, _intermediate)):
+            for size in (16, 512, 65536):
+                packet = bytearray(frame(b'p' * size))
+                packet[0 if proto == PROTO_ABRIDGED_INT else 3] |= 0x80
+                packets = [bytes(packet), frame(b't' * 8)]
+                for header_split in (1, 2, 3):
+                    with self.subTest(proto=proto, size=size, header_split=header_split):
+                        _, stream, parts = self._split(
+                            proto, packets, chunk_sizes=[header_split, 1, 11, size - 8])
+                        self.assertEqual(parts, [stream[:len(packet)], stream[len(packet):]])
+
+
+class WsReencryptTest(unittest.IsolatedAsyncioTestCase):
+    async def test_relay_preserves_encrypted_packets_and_incomplete_tail(self):
+        for proto, frame in ((PROTO_ABRIDGED_INT, _abridged),
+                             (PROTO_INTERMEDIATE_INT, _intermediate),
+                             (PROTO_PADDED_INTERMEDIATE_INT, _intermediate)):
+            with self.subTest(proto=proto):
+                packets = [frame(b'a' * 8), frame(b'b' * 16),
+                           frame(b'c' * 70000), frame(b'd' * 32)[:7]]
+                client_init, relay_init = _relay_init(), _relay_init()
+                reader = asyncio.StreamReader()
+                reader.feed_data(_encryptor(client_init).update(b''.join(packets)))
+                reader.feed_eof()
+                sent = []
+
+                async def send(data):
+                    sent.append(data)
+
+                async def send_batch(parts):
+                    sent.extend(parts)
+
+                async def recv():
+                    await asyncio.Future()
+
+                ws = SimpleNamespace(send=send, send_batch=send_batch, recv=recv,
+                                     close=AsyncMock())
+                writer = Mock(wait_closed=AsyncMock())
+                ctx = SimpleNamespace(clt_dec=_encryptor(client_init), tg_enc=_encryptor(relay_init))
+                await asyncio.wait_for(bridge_ws_reencrypt(
+                    reader, writer, ws, 'framing-test', ctx, splitter=MsgSplitter(proto)), 1)
+                decoder = _encryptor(relay_init)
+                self.assertEqual([decoder.update(part) for part in sent], packets)
+                ws.close.assert_awaited_once()
 
 
 class WsDiagnosticsTest(unittest.IsolatedAsyncioTestCase):

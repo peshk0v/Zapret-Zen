@@ -12,7 +12,6 @@ from .balancer import balancer
 from .config import proxy_config
 from .raw_websocket import RawWebSocket
 from .pool import cf_worker_pool
-from ._aes import Cipher, algorithms, modes
 from .network_debug import WsActivity
 from .cf_h2 import bridge_h2
 
@@ -32,8 +31,6 @@ def reset_tcp_backoff() -> None:
     _tcp_retry_after.clear()
     _tcp_connecting.clear()
 
-ZERO_64 = b'\x00' * 64
-
 
 class CryptoCtx:
     __slots__ = ('clt_dec', 'clt_enc', 'tg_enc', 'tg_dec')
@@ -50,44 +47,39 @@ class MsgSplitter:
     Splits TCP stream data into individual MTProto transport packets
     so each can be sent as a separate WS frame.
     """
-    __slots__ = ('_dec', '_proto', '_cipher_buf', '_plain_buf', '_disabled')
+    __slots__ = ('_proto', '_cipher_buf', '_plain_buf', '_disabled')
 
-    def __init__(self, relay_init: bytes, proto_int: int):
-        cipher = Cipher(algorithms.AES(relay_init[8:40]),
-                        modes.CTR(relay_init[40:56]))
-        self._dec = cipher.encryptor()
-        self._dec.update(ZERO_64)
+    def __init__(self, proto_int: int):
         self._proto = proto_int
         self._cipher_buf = bytearray()
         self._plain_buf = bytearray()
         self._disabled = False
 
-    def split(self, chunk: bytes) -> List[bytes]:
+    def split(self, chunk: bytes, plain: bytes) -> List[bytes]:
         if not chunk:
             return []
         if self._disabled:
             return [chunk]
 
         self._cipher_buf.extend(chunk)
-        self._plain_buf.extend(self._dec.update(chunk))
+        self._plain_buf.extend(plain)
 
         parts = []
         offset = 0
         buf_len = len(self._cipher_buf)
-        # Walk the buffer with an offset instead of deleting each packet from
-        # the front. Front-deletion on a bytearray shifts the remaining bytes,
-        # so a chunk holding many small packets degrades to O(N^2); a single
-        # trailing del keeps splitting O(N).
         while offset < buf_len:
             packet_len = self._next_packet_len(offset, buf_len - offset)
             if packet_len is None:
                 break
             if packet_len <= 0:
-                parts.append(bytes(self._cipher_buf[offset:]))
+                parts.append(bytes(self._cipher_buf) if offset == 0 else bytes(self._cipher_buf[offset:]))
                 offset = buf_len
                 self._disabled = True
                 break
-            parts.append(bytes(self._cipher_buf[offset:offset + packet_len]))
+            if offset == 0 and packet_len == buf_len:
+                parts.append(bytes(self._cipher_buf))
+            else:
+                parts.append(bytes(self._cipher_buf[offset:offset + packet_len]))
             offset += packet_len
 
         if offset:
@@ -365,7 +357,7 @@ async def bridge_ws_reencrypt(reader, writer, ws: RawWebSocket, label,
                 plain = ctx.clt_dec.update(chunk)
                 chunk = ctx.tg_enc.update(plain)
                 if splitter:
-                    parts = splitter.split(chunk)
+                    parts = splitter.split(chunk, plain)
                     if not parts:
                         continue
                     if activity is not None:

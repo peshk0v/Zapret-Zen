@@ -5,6 +5,7 @@ import subprocess
 import sys
 import threading
 import time
+import webbrowser
 from typing import Optional
 
 import customtkinter as ctk
@@ -12,13 +13,13 @@ import pyperclip
 import pystray
 from PIL import Image, ImageTk
 
-from proxy import get_link_host
+from proxy import __version__, get_link_host
 
 from utils.tray_common import (
-    APP_NAME, DEFAULT_CONFIG, FIRST_RUN_MARKER, LOG_FILE,
-    acquire_lock, bootstrap, check_ipv6_warning, ctk_run_dialog,
-    ensure_ctk_thread, ensure_dirs, load_config, load_icon, log,
-    maybe_notify_update, quit_ctk, release_lock, restart_proxy,
+    APP_NAME, DEFAULT_CONFIG, FIRST_RUN_MARKER, IS_FROZEN, LOG_FILE,
+    acquire_lock, bootstrap, check_ipv6_warning, check_update_async,
+    ctk_run_dialog, ensure_ctk_thread, ensure_dirs, load_config, load_icon,
+    log, quit_ctk, release_lock, restart_proxy,
     save_config, start_proxy, stop_proxy, tg_proxy_url,
 )
 from ui.ctk_tray_ui import (
@@ -31,10 +32,12 @@ from ui.ctk_theme import (
 )
 from ui.i18n import t
 from ui.settings_dialog import SettingsDialog
+from utils.update_check import get_status, relaunch_env
 
 _tray_icon: Optional[object] = None
 _config: dict = {}
 _exiting = False
+_update_flow_lock = threading.Lock()
 
 # dialogs (tkinter messagebox)
 
@@ -161,6 +164,7 @@ def _edit_config_dialog() -> None:
         widgets = install_tray_config_form(
             ctk, scroll, theme, cfg, DEFAULT_CONFIG,
             show_autostart=False,
+            on_update_click=_trigger_update_flow,
         )
 
         def _finish() -> None:
@@ -215,6 +219,78 @@ def _show_first_run() -> None:
     ctk_run_dialog(_build)
 
 
+# update
+
+
+def _restart_after_update() -> None:
+    from utils.linux_update import exe_path
+
+    stop_proxy()
+    release_lock()
+    exe = str(exe_path())
+    try:
+        subprocess.Popen(
+            [exe, *sys.argv[1:]], env=relaunch_env(),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, start_new_session=True,
+        )
+    except OSError as exc:
+        log.error("Failed to launch updated binary: %s", exc)
+        if acquire_lock():
+            start_proxy(_config, _show_error)
+        _show_error(t("update.error", msg=exc))
+        return
+    os._exit(0)
+
+
+def _trigger_update_flow(icon=None, item=None) -> None:
+    if not _update_flow_lock.acquire(blocking=False):
+        return
+
+    def _work() -> None:
+        from utils.linux_update import asset_name, detect_install_kind
+        from utils.update_check import find_asset, RELEASES_PAGE_URL
+
+        try:
+            st = get_status()
+            if _exiting or not st["has_update"]:
+                return
+            if _tray_icon is not None:
+                _tray_icon.menu = _build_menu()
+            kind = detect_install_kind() if IS_FROZEN else None
+            asset = find_asset(asset_name(kind)) if kind else None
+            page_url = st["html_url"] or RELEASES_PAGE_URL
+            if not asset:
+                if _ask_yes_no(t("update.ask_open", version=st["latest"]), t("app.update_title")):
+                    webbrowser.open(page_url)
+                return
+
+            if _ask_yes_no(t("update.ask_install", version=st["latest"]), t("app.update_title")):
+                _install_update(kind, asset, page_url)
+        except Exception:
+            log.exception("Update flow failed")
+        finally:
+            _update_flow_lock.release()
+
+    threading.Thread(target=_work, daemon=True, name="manual-update").start()
+
+
+def _install_update(kind: str, asset: dict, page_url: str) -> None:
+    from utils.linux_update import apply_update
+
+    err = apply_update(
+        kind, asset["url"], digest=asset.get("digest", ""), log=log,
+    )
+    if err is None:
+        log.info("Update installed, restarting")
+        _restart_after_update()
+        return
+
+    log.error("Update failed: %s", err)
+    if _ask_yes_no(t("update.install_fail", error=err), t("app.update_title")):
+        webbrowser.open(page_url)
+
+
 # tray menu
 
 
@@ -222,7 +298,7 @@ def _build_menu():
     host = _config.get("host", DEFAULT_CONFIG["host"])
     port = _config.get("port", DEFAULT_CONFIG["port"])
     link_host = get_link_host(host)
-    return pystray.Menu(
+    items = [
         pystray.MenuItem(t("tray.open_telegram", host=link_host, port=port), _on_open_in_telegram, default=True),
         pystray.MenuItem(t("tray.copy_link"), _on_copy_link),
         pystray.Menu.SEPARATOR,
@@ -231,7 +307,13 @@ def _build_menu():
         pystray.MenuItem(t("tray.logs"), _on_open_logs),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem(t("tray.exit"), _on_exit),
-    )
+    ]
+    st = get_status()
+    if st["has_update"]:
+        items.insert(-2, pystray.MenuItem(
+            t("tray.update", current=__version__, new=st["latest"]), _trigger_update_flow,
+        ))
+    return pystray.Menu(*items)
 
 
 # entry point
@@ -254,7 +336,7 @@ def run_tray() -> None:
         return
 
     start_proxy(_config, _show_error)
-    maybe_notify_update(_config, lambda: _exiting, _ask_yes_no)
+    check_update_async(_config, lambda: _exiting, lambda version, url: _trigger_update_flow())
     _show_first_run()
     check_ipv6_warning(_show_info)
 

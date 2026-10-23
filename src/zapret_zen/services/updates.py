@@ -242,6 +242,9 @@ class UpdatesManager:
     API_RELEASES = "https://api.github.com/repos/peshk0v/Zapret-Zen/releases"
     ATOM_FEED = "https://github.com/peshk0v/Zapret-Zen/releases.atom"
     SOURCEFORGE_PROJECT_URL = "https://sourceforge.net/projects/zapret-zen"
+    CODEBERG_PROJECT_URL = "https://codeberg.org/peshk0v/Zapret-Zen"
+    CODEBERG_RELEASES_URL = "https://codeberg.org/peshk0v/Zapret-Zen/releases"
+    CODEBERG_API_RELEASES = "https://codeberg.org/api/v1/repos/peshk0v/Zapret-Zen/releases"
     _CACHE_FILE = "app_update_check.json"
     _CACHE_TTL_SECONDS = 3600
     _METADATA_TIMEOUT = 8
@@ -309,6 +312,9 @@ class UpdatesManager:
             sourceforge_result = self._fetch_latest_via_sourceforge(progress, update_branch)
             if sourceforge_result is not None:
                 return sourceforge_result
+            codeberg_result = self._fetch_latest_via_codeberg(progress, update_branch)
+            if codeberg_result is not None:
+                return codeberg_result
             friendly_error = self._friendly_network_error(error)
             return {
                 "status": "error",
@@ -320,6 +326,9 @@ class UpdatesManager:
 
         releases = self._normalize_release_entries(payload, update_branch == "prerelease")
         if not releases:
+            codeberg_result = self._fetch_latest_via_codeberg(progress, update_branch)
+            if codeberg_result is not None:
+                return codeberg_result
             return {
                 "status": "error",
                 "current_version": __version__,
@@ -381,6 +390,103 @@ class UpdatesManager:
         if not name:
             return ""
         return f"{self.SOURCEFORGE_PROJECT_URL}/files/{urllib.parse.quote(name)}/download"
+
+    def _build_codeberg_asset_url(self, asset_name: str, tag: str) -> str:
+        name = str(asset_name or "").strip()
+        release_tag = str(tag or "").strip()
+        if not name or not release_tag:
+            return ""
+        return (
+            f"{self.CODEBERG_PROJECT_URL}/releases/download/"
+            f"{urllib.parse.quote(release_tag)}/{urllib.parse.quote(name)}"
+        )
+
+    @staticmethod
+    def _extract_release_tag(url: str) -> str:
+        match = re.search(r"/releases/tag/([^/?#]+)", str(url or ""))
+        return urllib.parse.unquote(match.group(1)) if match else ""
+
+    def _codeberg_tag_candidates(self, release_info: dict[str, str]) -> list[str]:
+        candidates: list[str] = []
+        extracted = self._extract_release_tag(str(release_info.get("html_url") or ""))
+        if extracted:
+            candidates.append(extracted)
+        version = str(release_info.get("latest_version") or "").strip()
+        for candidate in (version, f"v{version}" if version else ""):
+            if candidate and candidate not in candidates:
+                candidates.append(candidate)
+        return candidates
+
+    def _codeberg_asset_url(self, release_info: dict[str, str], asset_name: str) -> str:
+        """Resolve the best Codeberg (mirror) download URL for this update.
+
+        Prefers the asset URL published on the mirror itself (resolved
+        through the Codeberg API for the matching release tag) and falls
+        back to the conventional release download URL built from the
+        asset name.
+        """
+        asset_url = str(release_info.get("asset_url") or "").strip()
+        if "codeberg.org" in asset_url:
+            return asset_url
+        name = str(asset_name or "").strip()
+        for tag in self._codeberg_tag_candidates(release_info):
+            try:
+                payload = self.github.github_json(
+                    f"{self.CODEBERG_API_RELEASES}/tags/{urllib.parse.quote(tag)}",
+                    timeout=self._METADATA_TIMEOUT,
+                    purpose="app-release-metadata",
+                    retry=False,
+                )
+            except Exception as error:
+                self.logging.log("warning", "Codeberg mirror release lookup failed", tag=tag, error=str(error))
+                url = self._build_codeberg_asset_url(name or self._default_asset_name(), tag)
+                if url:
+                    return url
+                continue
+            if not isinstance(payload, dict):
+                continue
+            assets = [item for item in (payload.get("assets") or []) if isinstance(item, dict)]
+            if name:
+                for candidate in assets:
+                    if str(candidate.get("name") or "") == name:
+                        url = str(candidate.get("browser_download_url") or "")
+                        if url:
+                            return url
+            asset = self._pick_release_asset(assets)
+            if asset:
+                url = str(asset.get("browser_download_url") or "")
+                if url:
+                    return url
+            return ""
+        return ""
+
+    def _fetch_latest_via_codeberg(
+        self,
+        progress: Callable[[float | None, int, int, str, str], None] | None = None,
+        update_branch: str = "",
+    ) -> dict[str, str] | None:
+        if progress is not None:
+            progress(None, 0, 0, "check-codeberg", "")
+        try:
+            payload = self.github.github_json(
+                self.CODEBERG_API_RELEASES,
+                timeout=self._METADATA_TIMEOUT,
+                purpose="app-release-metadata",
+                retry=False,
+            )
+        except Exception as error:
+            self.logging.log("warning", "Codeberg mirror releases API unavailable", error=str(error))
+            return None
+        releases = self._normalize_release_entries(payload, update_branch == "prerelease")
+        if not releases:
+            self.logging.log("warning", "No releases found on Codeberg mirror")
+            return None
+        result = self._compose_release_result(releases, update_branch=update_branch)
+        result["source"] = "codeberg"
+        if "codeberg.org" not in str(result.get("html_url") or ""):
+            result["html_url"] = self.CODEBERG_RELEASES_URL
+        self._cache_check_result(result, update_branch=update_branch)
+        return result
 
     def _default_asset_name(self) -> str:
         machine = platform.machine().lower()
@@ -719,8 +825,9 @@ class UpdatesManager:
         github_domains = ("github.com", "api.github.com", "codeload.github.com")
         errors: list[str] = []
         prefer_sourceforge = str(release_info.get("source", "")) == "sourceforge"
+        prefer_codeberg = str(release_info.get("source", "")) == "codeberg"
 
-        if asset_url and not prefer_sourceforge:
+        if asset_url and not prefer_sourceforge and not prefer_codeberg:
             try:
                 _check_cancelled()
                 if progress is not None:
@@ -777,6 +884,36 @@ class UpdatesManager:
                 except Exception as error:
                     errors.append(f"sourceforge-zapret: {error}")
                     self.logging.log("warning", "App update download via Zapret+SourceForge failed", error=str(error))
+
+        codeberg_url = self._codeberg_asset_url(release_info, asset_name)
+        if codeberg_url:
+            try:
+                _check_cancelled()
+                if progress is not None:
+                    progress(None, 0, 0, "download-codeberg", "")
+                self._download_with_progress(codeberg_url, destination, progress, "download-codeberg", is_cancelled=is_cancelled)
+                return
+            except DownloadCancelledError:
+                raise
+            except Exception as error:
+                errors.append(f"codeberg: {error}")
+                self.logging.log("warning", "App update Codeberg download failed", error=str(error))
+            if self._domain_bypass is not None:
+                try:
+                    _check_cancelled()
+                    if progress is not None:
+                        progress(None, 0, 0, "download-zapret", "codeberg.org")
+                    self._domain_bypass(
+                        ("codeberg.org",),
+                        lambda: self._download_with_progress(codeberg_url, destination, progress, "download-codeberg", is_cancelled=is_cancelled),
+                        "app-update-download",
+                    )
+                    return
+                except DownloadCancelledError:
+                    raise
+                except Exception as error:
+                    errors.append(f"codeberg-zapret: {error}")
+                    self.logging.log("warning", "App update download via Zapret+Codeberg failed", error=str(error))
 
         raise RuntimeError(self._friendly_download_error(errors))
 

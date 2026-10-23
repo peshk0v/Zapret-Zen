@@ -7,6 +7,7 @@ import sys
 from typing import Any
 
 from zapret_zen.services.logging_service import LoggingManager
+from zapret_zen.services.process_compat import decode_process_output
 
 _VPN_PROCESS_PATTERNS = (
     "nekobox",
@@ -184,15 +185,15 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
                 script,
             ],
             capture_output=True,
-            text=True,
             check=False,
             creationflags=self._creationflags,
             startupinfo=startup,
         )
+        stderr = decode_process_output(proc.stderr)
         if proc.returncode != 0:
-            self.logging.log("warning", "PowerShell helper failed", stderr=(proc.stderr or "").strip()[-1000:])
+            self.logging.log("warning", "PowerShell helper failed", stderr=stderr.strip()[-1000:])
             return ""
-        return (proc.stdout or "").strip()
+        return decode_process_output(proc.stdout).strip()
 
     def _looks_like_ip_address(self, value: str) -> bool:
         candidate = value.strip()

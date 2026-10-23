@@ -7274,7 +7274,7 @@ class MainWindow(QMainWindow):
         canvas = QWidget()
         canvas.setObjectName("SettingsCanvas")
         layout = QVBoxLayout(canvas)
-        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setContentsMargins(24, 12, 24, 24)
         layout.setSpacing(16)
         scroll.setWidget(canvas)
         root = QVBoxLayout(page)
@@ -7311,9 +7311,10 @@ class MainWindow(QMainWindow):
             fl = QVBoxLayout(frame)
             fl.setContentsMargins(16, 14, 16, 14)
             fl.setSpacing(10)
-            lbl = QLabel(title)
-            lbl.setProperty("class", "title")
-            fl.addWidget(lbl)
+            if title:
+                lbl = QLabel(title)
+                lbl.setProperty("class", "title")
+                fl.addWidget(lbl)
             layout.addWidget(frame)
             return fl
 
@@ -7326,15 +7327,19 @@ class MainWindow(QMainWindow):
         settings = self.context.settings.get()
         ui_language = settings.language
 
-        app_section = _section(self._t("Application"))
+        app_section = _section("")
         mode_items = [
             (self._t("Light"), "light"),
             (self._t("Dark"), "dark"),
             ("OLED", "oled"),
         ]
         mode_w, mode_group = _segment(mode_items, settings.theme, "theme_mode")
-        app_section.addWidget(QLabel(self._t("Theme")))
-        app_section.addWidget(mode_w)
+        # Кнопки тем одинаковой ширины: берём ширину самой длинной подписи.
+        theme_buttons = mode_group.buttons()
+        if theme_buttons:
+            max_theme_hint = max(b.sizeHint().width() for b in theme_buttons)
+            for theme_btn in theme_buttons:
+                theme_btn.setMinimumWidth(max_theme_hint)
 
         palette_row = QWidget()
         palette_row.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
@@ -7344,7 +7349,9 @@ class MainWindow(QMainWindow):
         palette_group = QButtonGroup(palette_row)
         for i, hex_color in enumerate(ACCENT_PALETTE):
             btn = QPushButton()
-            btn.setMinimumHeight(28)
+            btn.setFixedHeight(30)
+            btn.setMinimumWidth(24)
+            btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setCheckable(True)
             btn.setChecked(hex_color == settings.accent_color)
@@ -7358,10 +7365,30 @@ class MainWindow(QMainWindow):
             palette_layout.addWidget(btn, 1)
         palette_group.setExclusive(True)
         ctrl["accent_palette"] = palette_group
-        app_section.addWidget(QLabel(self._t("Color")))
-        app_section.addWidget(palette_row)
+
+        # Тема и цвет акцента описывают один и тот же выбор оформления:
+        # полоса тем, стрелка-разделитель и растянутая палитра в одну линию.
+        arrow_lbl = QLabel("→")
+        arrow_lbl.setProperty("class", "muted")
+        arrow_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        arrow_font = arrow_lbl.font()
+        arrow_font.setPointSize(14)
+        arrow_font.setBold(True)
+        arrow_lbl.setFont(arrow_font)
+
+        appearance_row = QWidget()
+        appearance_row.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+        appearance_layout = QHBoxLayout(appearance_row)
+        appearance_layout.setContentsMargins(0, 0, 0, 0)
+        appearance_layout.setSpacing(10)
+        appearance_layout.addWidget(mode_w)
+        appearance_layout.addWidget(arrow_lbl)
+        appearance_layout.addWidget(palette_row, 1)
+        app_section.addWidget(QLabel(self._t("Theme")))
+        app_section.addWidget(appearance_row)
         lang_items = [(_language_display_name(l, ui_language), l) for l in ("ru", "en")]
         lang_w, _ = _segment(lang_items, settings.language, "language")
+        app_section.addWidget(QLabel(self._t("Language")))
         app_section.addWidget(lang_w)
         autostart_cb = QCheckBox(self._t("Run with Windows"))
         autostart_cb.setChecked(settings.autostart_windows)
@@ -7383,6 +7410,10 @@ class MainWindow(QMainWindow):
         tray_notif_cb.setChecked(settings.tray_notifications_enabled)
         ctrl["tray_notifications"] = tray_notif_cb
         app_section.addWidget(tray_notif_cb)
+        discord_rpc_cb = QCheckBox("Discord Rich Presence")
+        discord_rpc_cb.setChecked(settings.discord_rpc_enabled)
+        ctrl["discord_rpc"] = discord_rpc_cb
+        app_section.addWidget(discord_rpc_cb)
 
         branch_items = [
             (self._t("Release"), "release"),
@@ -7391,36 +7422,6 @@ class MainWindow(QMainWindow):
         branch_w, _ = _segment(branch_items, settings.update_branch, "update_branch")
         app_section.addWidget(QLabel(self._t("Update branch")))
         app_section.addWidget(branch_w)
-
-        # --- Discord Rich Presence section ---
-        _divider()
-        rpc_section = _section("Discord Rich Presence")
-
-        discord_rpc_cb = QCheckBox(self._t("Включить"))
-        discord_rpc_cb.setChecked(settings.discord_rpc_enabled)
-        ctrl["discord_rpc"] = discord_rpc_cb
-        rpc_section.addWidget(discord_rpc_cb)
-
-        rpc_detail_label = QLabel(self._t("Статус:"))
-        rpc_detail_input = QLineEdit(settings.discord_rpc_detail)
-        rpc_detail_input.setPlaceholderText(self._t("Текст статуса..."))
-        rpc_detail_input.setMaxLength(128)
-        rpc_detail_input.setEnabled(settings.discord_rpc_enabled)
-        ctrl["discord_rpc_detail"] = rpc_detail_input
-
-        def _rpc_toggled(checked: bool) -> None:
-            rpc_detail_input.setEnabled(checked)
-
-        discord_rpc_cb.toggled.connect(_rpc_toggled)
-
-        rpc_row = QWidget()
-        rpc_row.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        rr = QHBoxLayout(rpc_row)
-        rr.setContentsMargins(0, 0, 0, 0)
-        rr.setSpacing(6)
-        rr.addWidget(rpc_detail_label)
-        rr.addWidget(rpc_detail_input, 1)
-        rpc_section.addWidget(rpc_row)
 
         # --- Profiles section ---
         _divider()
@@ -8138,9 +8139,6 @@ class MainWindow(QMainWindow):
             cb = all_ctrl.get(key)
             if isinstance(cb, QCheckBox):
                 cb.stateChanged.connect(_ctrl_changed)
-        rpc_detail_w = all_ctrl.get("discord_rpc_detail")
-        if isinstance(rpc_detail_w, QLineEdit):
-            rpc_detail_w.textChanged.connect(_schedule_ctrl_save)
         for seg_key in ("update_branch", "ipset_mode", "gaming_mode", "tg_media_mode"):
             grp = all_ctrl.get(seg_key)
             if isinstance(grp, QButtonGroup):
@@ -8417,9 +8415,6 @@ class MainWindow(QMainWindow):
         cb = ctrl.get("discord_rpc")
         if isinstance(cb, QCheckBox):
             payload["discord_rpc_enabled"] = cb.isChecked()
-        inp = ctrl.get("discord_rpc_detail")
-        if isinstance(inp, QLineEdit):
-            payload["discord_rpc_detail"] = inp.text()
 
         before = self.context.settings.get()
         QTimer.singleShot(0, lambda p=payload, b=before: self._apply_settings_payload(b, p))
@@ -9023,13 +9018,10 @@ class MainWindow(QMainWindow):
         revision = self._settings_save_revision
         self._pending_settings_payload = dict(effective_payload)
         self.context.settings.update(**effective_payload)
-        if "discord_rpc_enabled" in effective_payload or "discord_rpc_detail" in effective_payload:
+        if "discord_rpc_enabled" in effective_payload:
             current = self.context.settings.get()
             if current.discord_rpc_enabled:
-                self.context.discord_rpc.configure(
-                    enabled=True,
-                    detail=current.discord_rpc_detail or "Использует для обхода блокировок.",
-                )
+                self.context.discord_rpc.configure(enabled=True)
             else:
                 self.context.discord_rpc.stop()
         if theme_changed:
@@ -12267,7 +12259,7 @@ class MainWindow(QMainWindow):
             else:
                 self._update_prepare_bar.setRange(0, 0)
         if self._update_prepare_detail_label is not None:
-            if status in ("download-github", "download-sourceforge", "download-zapret"):
+            if status in ("download-github", "download-sourceforge", "download-codeberg", "download-zapret"):
                 if total > 0:
                     percent = int(round(received / total * 100)) if total else 0
                     self._update_prepare_detail_label.setText(
@@ -12298,6 +12290,11 @@ class MainWindow(QMainWindow):
                 "GitHub недоступен. Проверка SourceForge...",
                 "GitHub is unreachable. Checking SourceForge...",
             )
+        if status == "check-codeberg":
+            return self._t(
+                "GitHub и SourceForge недоступны. Проверка зеркала на Codeberg...",
+                "GitHub and SourceForge are unreachable. Checking the Codeberg mirror...",
+            )
         if status == "download-github":
             return self._t(
                 "Скачивание обновления с GitHub...",
@@ -12308,7 +12305,17 @@ class MainWindow(QMainWindow):
                 "Скачивание обновления с SourceForge...",
                 "Downloading the update from SourceForge...",
             )
+        if status == "download-codeberg":
+            return self._t(
+                "Скачивание обновления с зеркала на Codeberg...",
+                "Downloading the update from the Codeberg mirror...",
+            )
         if status == "download-zapret":
+            if "codeberg" in detail.lower():
+                return self._t(
+                    "Включение Zapret для обхода блокировки Codeberg...",
+                    "Enabling Zapret to bypass Codeberg blocking...",
+                )
             if "sourceforge" in detail.lower():
                 return self._t(
                     "Включение Zapret для обхода блокировки SourceForge...",
@@ -13089,10 +13096,7 @@ class MainWindow(QMainWindow):
         self._update_power_icon()
         self.power_button.setEnabled(not self._toggle_in_progress)
         if fully_running and settings.discord_rpc_enabled:
-            self.context.discord_rpc.configure(
-                enabled=True,
-                detail=settings.discord_rpc_detail or "Использует для обхода блокировок.",
-            )
+            self.context.discord_rpc.configure(enabled=True)
         elif not fully_running or not settings.discord_rpc_enabled:
             self.context.discord_rpc.stop()
         if isinstance(self.power_button, AnimatedPowerButton):
