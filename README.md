@@ -20,6 +20,13 @@
 [![Downloads](https://img.shields.io/github/downloads/peshk0v/Zapret-Zen/total?style=for-the-badge&color=2ea44f&label=Скачиваний)](https://github.com/peshk0v/Zapret-Zen/releases)
 [![License](https://img.shields.io/github/license/peshk0v/Zapret-Zen?style=for-the-badge&color=E0A96D&label=Лицензия)](LICENSE)
 
+
+
+[![SourceForge](https://img.shields.io/badge/SourceForge-Download-FF6600?style=for-the-badge&logo=sourceforge&logoColor=white)](https://sourceforge.net/projects/zapret-zen/files/latest/download)
+[![Komi Store](https://img.shields.io/badge/Komi_Store-Download-red?style=for-the-badge)](https://github-store.org/app?repo=peshk0v/Zapret-Zen)
+[![Codeberg](https://img.shields.io/badge/Codeberg-Releases-2185D0?style=for-the-badge&logo=codeberg&logoColor=white)](https://codeberg.org/peshk0v/Zapret-Zen/releases)
+[![GitHub](https://img.shields.io/badge/GitHub-Releases-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/peshk0v/Zapret-Zen/releases)
+
 </div>
 
 ## 🖼️ Скриншоты
