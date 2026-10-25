@@ -65,6 +65,7 @@ class AppSettings:
     dismissed_app_update_key: str = ""
     dismissed_component_updates: dict[str, str] = field(default_factory=dict)
     discord_rpc_enabled: bool = True
+    window_geometry: str = ""
 
 
 @dataclass(slots=True)
