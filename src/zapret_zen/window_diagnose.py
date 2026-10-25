@@ -395,10 +395,12 @@ def build_report(app: QApplication, window: QMainWindow, output: Path | None = N
                 lines.append(f"glow({wrapper.objectName()}) geo={_geo(wrapper)}")
             fallback = bool(getattr(window, "_compositor_fallback_applied", False))
             mask_radius = getattr(window, "_opaque_window_mask_radius", None)
+            rounded = getattr(window, "_native_corner_rounding", None)
             lines.append(
                 "opaqueFallback: applied=" + str(fallback)
                 + " windowMask=" + str(not window.mask().isNull())
                 + " maskRadius=" + (str(mask_radius) if mask_radius is not None else "-")
+                + " roundedCorners=" + (str(rounded) if rounded is not None else "-")
             )
         except Exception:
             pass

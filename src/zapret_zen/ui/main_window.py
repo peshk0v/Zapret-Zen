@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import ctypes.wintypes  # noqa: F401 — регистрирует ctypes.wintypes для nativeEvent
 import json
 import math
 import os
@@ -28,7 +29,7 @@ from zapret_zen.services.service_catalog import (
     service_ids_in_categories,
 )
 from PySide6.QtCore import QAbstractAnimation, QCoreApplication, QEasingCurve, QEvent, QEventLoop, QObject, QPoint, QPointF, QRect, QRectF, QSize, QSizeF, Qt, QTimer, Signal, QPropertyAnimation, QParallelAnimationGroup, Property, QByteArray, QVariantAnimation
-from PySide6.QtGui import QAction, QActionGroup, QColor, QCursor, QCloseEvent, QFont, QFontDatabase, QFontMetrics, QIcon, QImage, QKeyEvent, QLinearGradient, QMouseEvent, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient, QRegion, QTextCharFormat, QTextCursor, QTextDocument
+from PySide6.QtGui import QAction, QActionGroup, QColor, QCursor, QCloseEvent, QFont, QFontDatabase, QFontMetrics, QIcon, QImage, QKeyEvent, QLinearGradient, QMouseEvent, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient, QTextCharFormat, QTextCursor, QTextDocument
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -1398,7 +1399,10 @@ class ServiceCategoryCard(BaseServiceCard):
         self.category = category
         self._icon_pixmap = QPixmap()
         self._check_pixmap = QPixmap()
-        self.setMinimumSize(220, 180)
+        # Невысокий минимум: 3 карточки категорий должны помещаться в один
+        # ряд даже в узком окне (min 720px), иначе крайняя обрезалась бы и
+        # пришлось бы листать. Равномерно ширину раздаёт QHBoxLayout stretch.
+        self.setMinimumSize(180, 180)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
 
@@ -3260,6 +3264,44 @@ class OnboardingPageWidget(QWidget):
         painter.restore()
 
 
+class SidebarHost(QWidget):
+    """Контейнер сайдбара для плавной анимации выезда.
+
+    Панель сайдбара остаётся фиксированной ширины, а её позиция привязана
+    к правому краю контейнера: при сужении контейнера панель уезжает влево
+    и обрезается краем окна — получается эффект выезда/задвижки, а не
+    сжатия иконок. Анимируется максимальная ширина контейнера
+    (полоска 14..ширина панели), layout родителя отдаёт контейнеру ровно
+    эту ширину. В свёрнутом состоянии у края окна остаётся узкая видимая
+    кромка панели — по наведению на неё сайдбар выезжает. Кромка всегда
+    чистая: у панели 78px с отступами 12px и кнопками 46px правое поле
+    (58..78) шире полоски 14px, туда иконки не попадают.
+    """
+
+    SIDEBAR_WIDTH = 78
+
+    def __init__(self, panel: QWidget, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._panel = panel
+        panel.setParent(self)
+        # Фактическая ширина панели задаётся сайдбаром (setFixedWidth) —
+        # берём её, чтобы позиция панели и максимум контейнера совпадали.
+        self._panel_width = max(int(panel.minimumWidth()), 0) or self.SIDEBAR_WIDTH
+        self.setMinimumWidth(0)
+        self.setMaximumWidth(self._panel_width)
+
+    def sizeHint(self) -> QSize:
+        return QSize(self._panel_width, 180)
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, 180)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        width = self.width()
+        self._panel.setGeometry(width - self._panel_width, 0, self._panel_width, max(0, self.height()))
+
+
 class ContentGlowWidget(QWidget):
     """Background glow behind all pages — diffused radial gradient from accent color."""
 
@@ -3274,11 +3316,21 @@ class ContentGlowWidget(QWidget):
         self._glow_intensity = 1.0
         self._pulse_anim: QPropertyAnimation | None = None
         self._opaque_mode = False
+        self._corner_radius = 8.0
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
 
     def set_opaque_mode(self, enabled: bool) -> None:
         """Switch glow painting to the fully-opaque window fallback variant."""
         self._opaque_mode = bool(enabled)
+        self.update()
+
+    def set_corner_radius(self, radius: float) -> None:
+        """Clip radius должен совпадать с углами окна: 8px у DWM (Win11),
+        0 при прямых углах (Windows 10)."""
+        value = max(0.0, float(radius))
+        if abs(value - self._corner_radius) < 0.01:
+            return
+        self._corner_radius = value
         self.update()
 
     def set_accent_color(self, hex_color: str) -> None:
@@ -3370,9 +3422,10 @@ class ContentGlowWidget(QWidget):
         center_x = rect.left() + rect.width() * self._glow_x
         center_y = rect.top() + rect.height() * self._glow_y
 
-        # Clip to the full window shape; the native DWM corners use ~8px on this OS.
+        # Clip to the full window shape: the clip radius must match the
+        # native corner style (8px DWM rounding on Win11, 0 on Win10).
         window_path = QPainterPath()
-        window_path.addRoundedRect(rect, 8, 8)
+        window_path.addRoundedRect(rect, self._corner_radius, self._corner_radius)
 
         # Accent glow in content area
         painter.setClipPath(window_path)
@@ -4200,6 +4253,26 @@ class _SettingsTabBar(QWidget):
 
 
 class MainWindow(QMainWindow):
+    # Логическая ширина сайдбара, ширина видимой полоски в свёрнутом
+    # состоянии и порог ширины окна, ниже которого сайдбар скрывается.
+    # Порог намеренно вплотную к минимуму (720): сайдбар исчезает только
+    # когда окно реально поджимают к минимальному размеру.
+    _SIDEBAR_WIDTH = 78
+    _SIDEBAR_STRIP_WIDTH = 14
+    _SIDEBAR_AUTO_COLLAPSE_WIDTH = 760
+    # Высота панели заголовка в обычном и «плотном» (низкое окно) виде.
+    _TITLE_BAR_HEIGHT = 52
+    _TITLE_BAR_HEIGHT_COMPACT = 40
+    # Пороги высоты окна с гистерезисом: панель сжимается только вплотную
+    # к минимуму (440), а не при любом уменьшении, и не мерцает на границе.
+    _TITLE_BAR_COMPACT_BELOW = 500
+    _TITLE_BAR_FULL_AT = 520
+    # Стандартный размер окна — цель кнопки «Вернуть стандартный размер окна».
+    _DEFAULT_WINDOW_SIZE = (860, 520)
+    # Резервная (Qt-уровневая) зона ресайза у краёв, если нативный
+    # WM_NCHITTEST не отработал. Логические пиксели.
+    _FRAMELESS_RESIZE_BORDER = 6
+
     def __init__(
         self,
         context: ApplicationContext,
@@ -4425,7 +4498,21 @@ class MainWindow(QMainWindow):
         self._component_update_label: QLabel | None = None
         self._last_prompted_update_version = ""
         self._compositor_fallback_applied = True
-        self._opaque_window_mask_radius = 16
+        self._native_corner_rounding = True
+        self._corner_style_rounded: bool | None = None
+        self._sidebar_host = None
+        self._sidebar_panel = None
+        self._sidebar_stored_visible = True   # состояние по настройке/ширине окна
+        self._sidebar_hover_peek = False      # временный выезд по наведению на полоску
+        self._sidebar_small = False
+        self._sidebar_visible = True
+        self._sidebar_width_anim: QPropertyAnimation | None = None
+        self._title_bar: QFrame | None = None
+        self._title_bar_height_anim: QVariantAnimation | None = None
+        self._title_bar_compact = False
+        self._resize_edge = ""
+        self._resize_origin = QPoint()
+        self._resize_rect: QRect | None = None
         self._resume_component_ids: list[str] = []
         self._resume_restart_pending = False
         self._partial_restart_count = 0
@@ -4580,12 +4667,18 @@ class MainWindow(QMainWindow):
             self._component_states_cache = {}
             self._component_defs_cache = {}
 
-        self.setFixedSize(860, 520)
+        # Окно изменяемого размера: минимальный размер берётся с учётом
+        # вложенных layout'ов (строка оформления ~638px + поля страниц),
+        # сайдбар в узких окнах скрывается автоматически, поэтому минимум
+        # получается компактным.
+        self.setMinimumSize(720, 440)
+        self.resize(*self._DEFAULT_WINDOW_SIZE)
         self.setWindowTitle("Zapret-Zen")
         self.setWindowIcon(self._runtime_window_icon())
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, False)
         self._build_ui()
+        self._restore_window_geometry()
         self._attach_button_animations_recursive(self.centralWidget())
         self._setup_tray()
         self._prepare_onboarding_services_stage()
@@ -4605,6 +4698,8 @@ class MainWindow(QMainWindow):
             self._connect_backend_signals(self.context.backend)
         if not self._launch_hidden:
             QTimer.singleShot(0, lambda: _bring_widget_to_front(self))
+        self._sidebar_small = self.width() < self._SIDEBAR_AUTO_COLLAPSE_WIDTH
+        self._sync_sidebar_state(animated=False)
         _startup_trace("MainWindow: __init__ complete")
 
     def _t(self, first: str, second: str | None = None) -> str:
@@ -5140,15 +5235,113 @@ class MainWindow(QMainWindow):
     def _apply_opaque_frame_style(self) -> None:
         """Keep the card frame seamless in the opaque fallback.
 
-        The 1px RootFrame border is drawn at border-radius 16, while the
-        DWM corner clip (Win11) rounds the window at roughly 8px. The border
-        would float inside the clip and read as a second framed edge. DWM
-        supplies the window outline instead, so drop the redundant border.
+        На Win11 DWM сам рисует контур окна, поэтому рамка RootFrame не
+        нужна. На Windows 10 рамка наоборот нужна (1px по периметру) — её
+        цвет зависит от темы, поэтому стиль пересобирается здесь, при
+        каждой смене темы.
         """
-        root_frame = self.findChild(OnboardingFrame, "RootFrame")
-        if root_frame is not None:
-            root_frame.setStyleSheet("QFrame#RootFrame { border: none; }")
-            _startup_trace("MainWindow: RootFrame border cleared for opaque mode")
+        self._corner_style_rounded = None
+        self._sync_window_corner_style()
+
+    def _restore_window_geometry(self) -> None:
+        """Восстанавливает сохранённый размер/позицию либо подгоняет под экран."""
+        raw = str(self.context.settings.get().window_geometry or "")
+        restored = False
+        if raw:
+            try:
+                data = QByteArray.fromBase64(raw.encode("ascii"))
+                if not data.isEmpty():
+                    restored = bool(self.restoreGeometry(data))
+            except Exception:
+                restored = False
+        if restored:
+            w = max(self.minimumWidth(), self.width())
+            h = max(self.minimumHeight(), self.height())
+            if (w, h) != (self.width(), self.height()):
+                self.resize(w, h)
+            return
+        self._fit_window_to_screen()
+
+    def _fit_window_to_screen(self) -> None:
+        """Ужимает стартовый размер под доступную область экрана.
+
+        На маленьких ноутбуках (низкое разрешение или HiDPI) окно 860×520
+        могло не помещаться целиком — подгоняем вниз, не опускаясь ниже
+        минимального размера.
+        """
+        try:
+            screen = self.screen()
+            if screen is None:
+                screen = QApplication.primaryScreen()
+            if screen is None:
+                return
+            avail = screen.availableGeometry()
+            width = self.width()
+            height = self.height()
+            max_w = max(self.minimumWidth(), avail.width() - 12)
+            max_h = max(self.minimumHeight(), avail.height() - 12)
+            if width <= max_w and height <= max_h:
+                return
+            scale = min(max_w / max(1, width), max_h / max(1, height), 1.0)
+            self.resize(
+                max(self.minimumWidth(), int(width * scale)),
+                max(self.minimumHeight(), int(height * scale)),
+            )
+            _startup_trace(f"MainWindow: initial size fitted to screen -> {self.width()}x{self.height()}")
+        except Exception:
+            pass
+
+    def _reset_window_size(self) -> None:
+        """Возвращает окно к стандартному размеру, центрирует и сохраняет.
+
+        Кнопка «Вернуть стандартный размер окна» на странице «Инструменты».
+        """
+        self.resize(*self._DEFAULT_WINDOW_SIZE)
+        # На маленьких экранах стандарт всё же подгоняем под доступную область.
+        self._fit_window_to_screen()
+        try:
+            screen = self.screen()
+            if screen is None:
+                screen = QApplication.primaryScreen()
+            if screen is not None:
+                frame = self.frameGeometry()
+                frame.moveCenter(screen.availableGeometry().center())
+                self.move(frame.topLeft())
+        except Exception:
+            pass
+        self._save_window_geometry()
+        self._toast_notification(
+            "success",
+            self._t("Размер окна сброшен", "Window size reset"),
+            self._t(
+                "Окно вернулось к стандартному размеру и отцентрировано.",
+                "The window has been reset to the default size and centered.",
+            ),
+        )
+
+    def hideEvent(self, event) -> None:
+        if not self.isMinimized():
+            # Запоминаем размер/позицию при сворачивании в трей и закрытии —
+            # для изменяемого окна это основной момент, когда геометрия
+            # пользователя действительно «ушла» в настройки.
+            self._save_window_geometry()
+        super().hideEvent(event)
+
+    def _save_window_geometry(self) -> None:
+        try:
+            data = bytes(self.saveGeometry().toBase64()).decode("ascii")
+        except Exception:
+            return
+        try:
+            current = str(self.context.settings.get().window_geometry or "")
+        except Exception:
+            return
+        if data == current:
+            return
+        try:
+            self.context.settings.update(window_geometry=data)
+        except Exception:
+            pass
 
     def _schedule_post_show_sync(self) -> None:
         def _sync() -> None:
@@ -5305,8 +5498,18 @@ class MainWindow(QMainWindow):
         root_frame.addLayout(body)
 
         sidebar = self._build_sidebar()
-        self._sidebar_widget = sidebar
-        body.addWidget(sidebar)
+        self._sidebar_panel = sidebar
+        sidebar_host = SidebarHost(sidebar)
+        self._sidebar_host = sidebar_host
+        sidebar_host.setObjectName("SidebarHost")
+        # Наведение на видимую полоску свёрнутого сайдбара выдвигает его:
+        # ловим Enter/Leave и на контейнере, и на самой панели.
+        sidebar_host.installEventFilter(self)
+        sidebar.installEventFilter(self)
+        # Онбординг скрывает/показывает сайдбар через _sidebar_widget:
+        # им владеет контейнер, чтобы вместе с панелью исчезала и полоса.
+        self._sidebar_widget = sidebar_host
+        body.addWidget(sidebar_host)
         body.addWidget(self._build_content(), 1)
 
         root.addWidget(frame)
@@ -5365,6 +5568,8 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         if sys.platform.startswith("win"):
             self._apply_opaque_window_mask()
+        self._sync_title_bar_for_height()
+        self._sync_sidebar_for_width()
         self._reposition_loading_overlay()
         self._reposition_page_transition_overlay()
         self._position_onboarding_service_action()
@@ -5536,21 +5741,51 @@ class MainWindow(QMainWindow):
             # re-apply the region mask mid-transition). Re-applied on next show.
             return
         if self._try_dwm_rounded_corners():
+            self._native_corner_rounding = True
             self.clearMask()
             _startup_trace("MainWindow: using DWM rounded corners, mask cleared")
+        else:
+            # Windows 10 и старше (или DWM-скругление недоступно): системного
+            # скругления нет. Оставляем прямые углы — родной вид окна Windows 10.
+            # QRegion-маску намеренно НЕ ставим: её ступенчатый контур
+            # выглядит грубо и даёт «лесенку» по краям.
+            self._native_corner_rounding = False
+            self.clearMask()
+            _startup_trace("MainWindow: square window corners (native Win10, no mask)")
+        self._sync_window_corner_style()
+        self._ensure_frameless_resize_style()
+
+    def _sync_window_corner_style(self) -> None:
+        """Согласует оформление краёв окна с фактическим стилем углов.
+
+        Win11 (DWM): углы скругляет система, рамка RootFrame не нужна,
+        свечение обрезается по 8px. Win10: прямые углы + тонкая рамка 1px
+        по периметру, чтобы край окна читался как у родного окна, а свечение
+        обрезается строго по прямоугольнику.
+        """
+        rounded = bool(getattr(self, "_native_corner_rounding", True))
+        glow = getattr(self, "_pages_host", None)
+        if glow is not None:
+            try:
+                glow.set_corner_radius(8.0 if rounded else 0.0)
+            except Exception:
+                pass
+        if getattr(self, "_corner_style_rounded", None) == rounded:
             return
-        try:
-            rect = QRectF(self.rect())
-            if rect.width() <= 0 or rect.height() <= 0:
-                return
-            r = self._opaque_window_mask_radius + 1  # leave the 1px RootFrame border intact
-            path = QPainterPath()
-            path.addRoundedRect(rect, r, r)
-            region = QRegion(path.toFillPolygon().toPolygon())
-            self.setMask(region)
-            _startup_trace(f"MainWindow: opaque window mask applied radius={r}")
-        except Exception as error:
-            _startup_trace(f"MainWindow: opaque mask failed: {error!r}")
+        self._corner_style_rounded = rounded
+        root_frame = self.findChild(OnboardingFrame, "RootFrame")
+        if root_frame is None:
+            return
+        if rounded:
+            root_frame.setStyleSheet("QFrame#RootFrame { border: none; }")
+            _startup_trace("MainWindow: RootFrame border cleared for DWM corners")
+        else:
+            theme = self.context.settings.get().theme
+            edge = "#b9c4d6" if is_light_theme(theme) else "#3a4763"
+            root_frame.setStyleSheet(
+                f"QFrame#RootFrame {{ border: 1px solid {edge}; border-radius: 0px; }}"
+            )
+            _startup_trace("MainWindow: RootFrame 1px border for native Win10 edges")
 
     def _sync_power_aura_geometry(self) -> None:
         if self.power_aura is None or not hasattr(self, "_power_aura_host") or not hasattr(self, "power_button"):
@@ -5596,19 +5831,26 @@ class MainWindow(QMainWindow):
     def _build_title_bar(self) -> QWidget:
         bar = QFrame()
         bar.setObjectName("TitleBar")
-        bar.setFixedHeight(52)
+        # Высота панели адаптивная: при низком окне панель плавно сужается.
+        self._title_bar = bar
+        self._title_bar_compact = self.height() < self._TITLE_BAR_COMPACT_BELOW
+        bar.setFixedHeight(
+            self._TITLE_BAR_HEIGHT_COMPACT if self._title_bar_compact else self._TITLE_BAR_HEIGHT
+        )
         row = QHBoxLayout(bar)
-        row.setContentsMargins(12, 9, 12, 9)
+        # Вертикальные отступы нулевые: элементы центрируются по высоте панели,
+        # поэтому одинаково хорошо смотрятся и на 52px, и на 40px.
+        row.setContentsMargins(12, 0, 12, 0)
         row.setSpacing(8)
 
         title = QLabel("Zapret-Zen")
         title.setProperty("class", "title")
-        row.addWidget(title)
+        row.addWidget(title, 0, Qt.AlignmentFlag.AlignVCenter)
 
         author = QLabel("by peshk0v")
         author.setProperty("class", "muted")
         author.setContentsMargins(0, 2, 0, 0)
-        row.addWidget(author)
+        row.addWidget(author, 0, Qt.AlignmentFlag.AlignVCenter)
         row.addStretch(1)
 
         min_btn = self._window_btn("", "min")
@@ -5621,9 +5863,67 @@ class MainWindow(QMainWindow):
         close_btn.setIconSize(QSize(15, 15))
         close_btn.clicked.connect(self.close)
         self._attach_button_animations(close_btn)
-        row.addWidget(min_btn)
-        row.addWidget(close_btn)
+        row.addWidget(min_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        row.addWidget(close_btn, 0, Qt.AlignmentFlag.AlignVCenter)
         return bar
+
+    def _title_bar_height_for_drag(self) -> int:
+        """Фактическая высота заголовка — зона перетаскивания окна."""
+        bar = self._title_bar
+        if bar is None:
+            return self._TITLE_BAR_HEIGHT
+        return max(bar.height(), self._TITLE_BAR_HEIGHT_COMPACT)
+
+    def _sync_title_bar_for_height(self) -> None:
+        """Вызывается из resizeEvent: адаптивная высота панели заголовка."""
+        bar = self._title_bar
+        if bar is None:
+            return
+        height = self.height()
+        compact = self._title_bar_compact
+        if height < self._TITLE_BAR_COMPACT_BELOW:
+            compact = True
+        elif height >= self._TITLE_BAR_FULL_AT:
+            # Гистерезис: между порогами сохраняем текущее состояние,
+            # чтобы панель не мерцала при ресайзе вокруг границы.
+            compact = False
+        target = self._TITLE_BAR_HEIGHT_COMPACT if compact else self._TITLE_BAR_HEIGHT
+        if compact != self._title_bar_compact:
+            self._title_bar_compact = compact
+            self._animate_title_bar_height(target, animated=self.isVisible())
+        elif bar.height() != target:
+            self._animate_title_bar_height(target, animated=self.isVisible())
+
+    def _animate_title_bar_height(self, target: int, *, animated: bool) -> None:
+        bar = self._title_bar
+        if bar is None:
+            return
+        anim = self._title_bar_height_anim
+        if anim is not None:
+            try:
+                if anim.state() == QAbstractAnimation.State.Running:
+                    anim.stop()
+            except RuntimeError:
+                anim = None
+                self._title_bar_height_anim = None
+        if not animated or bar.height() == target:
+            bar.setFixedHeight(target)
+            return
+        if anim is None:
+            anim = QVariantAnimation(self)
+            anim.setDuration(200)
+            anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+            anim.valueChanged.connect(lambda value: self._set_title_bar_height(int(round(value))))
+            self._title_bar_height_anim = anim
+        anim.setStartValue(bar.height())
+        anim.setEndValue(target)
+        anim.start()
+
+    def _set_title_bar_height(self, height: int) -> None:
+        bar = self._title_bar
+        if bar is None:
+            return
+        bar.setFixedHeight(max(self._TITLE_BAR_HEIGHT_COMPACT, int(height)))
 
     def _window_btn(self, text: str, role: str) -> QToolButton:
         btn = QToolButton()
@@ -5797,7 +6097,7 @@ class MainWindow(QMainWindow):
     def _build_sidebar(self) -> QWidget:
         side = SidebarPanel()
         side.setObjectName("Sidebar")
-        side.setFixedWidth(78)
+        side.setFixedWidth(self._SIDEBAR_WIDTH)
         col = QVBoxLayout(side)
         col.setContentsMargins(12, 12, 12, 12)
         col.setSpacing(10)
@@ -5835,6 +6135,142 @@ class MainWindow(QMainWindow):
             self._nav_buttons[0].setChecked(True)
         QTimer.singleShot(0, lambda: self._sync_nav_highlight(animated=False))
         return side
+
+    # --- Collapsible sidebar -------------------------------------------------
+
+    def _sidebar_should_be_visible(self) -> bool:
+        """Сайдбар виден, пока окно достаточно широкое (без учёта hover)."""
+        return self.width() >= self._SIDEBAR_AUTO_COLLAPSE_WIDTH
+
+    def _animate_sidebar_width(self, target: int, *, animated: bool) -> None:
+        host = self._sidebar_host
+        if host is None:
+            return
+        anim = self._sidebar_width_anim
+        if anim is not None:
+            try:
+                if anim.state() == QAbstractAnimation.State.Running:
+                    anim.stop()
+            except RuntimeError:
+                anim = None
+                self._sidebar_width_anim = None
+        if not animated or host.maximumWidth() == target:
+            host.setMaximumWidth(target)
+            host.updateGeometry()
+            return
+        if anim is None:
+            # Одна переиспользуемая анимация на контейнер: stop() + новые
+            # start/end значения, без создания объектов на каждый клик.
+            anim = QPropertyAnimation(host, b"maximumWidth", self)
+            anim.setDuration(240)
+            anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+            self._sidebar_width_anim = anim
+        anim.setStartValue(host.maximumWidth())
+        anim.setEndValue(target)
+        anim.start()
+
+    def _sync_sidebar_state(self, *, animated: bool = True) -> None:
+        self._sidebar_stored_visible = self._sidebar_should_be_visible()
+        if self._sidebar_stored_visible:
+            # Сайдбар раскрыт — наведение ничего не решает.
+            self._sidebar_hover_peek = False
+        self._update_sidebar_target(animated=animated)
+
+    def _update_sidebar_target(self, *, animated: bool) -> None:
+        host = self._sidebar_host
+        if host is None:
+            return
+        expanded = self._sidebar_stored_visible or self._sidebar_hover_peek
+        self._sidebar_visible = expanded
+        target = self._SIDEBAR_WIDTH if expanded else self._SIDEBAR_STRIP_WIDTH
+        changed = host.maximumWidth() != target
+        self._apply_sidebar_strip_style(not expanded)
+        self._animate_sidebar_width(target, animated=animated)
+        if not expanded:
+            # Сайдбар уезжает в полоску — подсветка активного пункта не должна
+            # выглядывать из-под кромки. Панель уезжает вместе с ней, но на
+            # узкой полоске (или в анимации) прямоугольник всё равно виден,
+            # поэтому гасим его по завершении выезда.
+            if animated:
+                QTimer.singleShot(300, self._clear_nav_highlight_if_collapsed)
+            else:
+                self._clear_nav_highlight_if_collapsed()
+        else:
+            self._sync_nav_highlight(animated=False)
+        if changed:
+            # Ширина контента изменилась, хотя само окно не ресайзилось:
+            # сетки сервисов/модов пересобираются вручную (как в resizeEvent).
+            if animated:
+                QTimer.singleShot(300, self._reformat_pages_for_sidebar)
+            else:
+                self._reformat_pages_for_sidebar()
+
+    def _apply_sidebar_strip_style(self, collapsed: bool) -> None:
+        """Оформление полоски у края окна в свёрнутом состоянии.
+
+        Сайдбар не уходит до конца: у левого края остаётся видимая кромка
+        панели — по наведению на неё сайдбар выезжает.
+
+        НИКАКОЙ ПЕРЕКРАСКИ И ЛИНИЙ: тема оставляет свой фон панели. Раньше
+        здесь были синяя заливка и акцентная линия 2px, затем тонкая
+        кромка border-right — всё это читалось как лишняя полоска на краю,
+        поэтому от неё отказались совсем.
+        """
+        panel = self._sidebar_panel
+        if panel is None:
+            return
+        if panel.styleSheet():
+            panel.setStyleSheet("")
+
+    def _clear_nav_highlight_if_collapsed(self) -> None:
+        """Гасит подсветку активного пункта, пока сайдбар свёрнут в полоску."""
+        if self._sidebar_stored_visible or self._sidebar_hover_peek:
+            return
+        sidebar = self._sidebar_panel
+        if sidebar is not None:
+            sidebar.clear_highlight()
+
+    def _on_sidebar_hover_enter(self) -> None:
+        if self._sidebar_stored_visible or self._sidebar_hover_peek:
+            return
+        if getattr(self, "_onboarding_active", False):
+            return
+        # Сайдбар свёрнут в полоску — наведение временно выдвигает его.
+        self._sidebar_hover_peek = True
+        self._update_sidebar_target(animated=True)
+
+    def _on_sidebar_hover_leave(self) -> None:
+        if not self._sidebar_hover_peek:
+            return
+        self._sidebar_hover_peek = False
+        self._update_sidebar_target(animated=True)
+
+    def _reformat_pages_for_sidebar(self) -> None:
+        if not hasattr(self, "pages"):
+            return
+        index = self.pages.currentIndex()
+        if index == 0:
+            # Дашборд: ширина контента изменилась — перерисовать карточки
+            # и вернуть ауру питания в центр (как в resizeEvent).
+            self.refresh_dashboard()
+            self._sync_power_aura_geometry()
+        elif index == 1:
+            self.refresh_services()
+        elif index == 2:
+            self._sync_mod_card_layout()
+        elif index == 3:
+            self._sync_settings_components_if_visible()
+
+    def _sync_sidebar_for_width(self) -> None:
+        """Вызывается из resizeEvent: авто-скрытие в узком окне."""
+        small = self.width() < self._SIDEBAR_AUTO_COLLAPSE_WIDTH
+        if small != self._sidebar_small:
+            # Пересекли порог ширины — временный выезд по наведению
+            # сбрасываем, решают настройка и авто-логика.
+            self._sidebar_small = small
+            self._sidebar_hover_peek = False
+            if self._sidebar_host is not None:
+                self._sync_sidebar_state(animated=self.isVisible())
 
     def _build_content(self) -> QWidget:
         pane = QFrame()
@@ -7269,7 +7705,9 @@ class MainWindow(QMainWindow):
         scroll.setObjectName("SettingsScroll")
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # На очень узких окнах строка оформления (~638px) может не поместиться
+        # — вместо обрезки дадим горизонтальную полосу прокрутки.
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         canvas = QWidget()
         canvas.setObjectName("SettingsCanvas")
@@ -7938,6 +8376,10 @@ class MainWindow(QMainWindow):
         tools_section.addWidget(_make_tool_btn(self._t("Менеджер обновлений", "Update Manager"), self._show_update_manager))
         tools_section.addWidget(_make_tool_btn(self._t("Rebuild merged"), self._rebuild_runtime))
         tools_section.addWidget(_make_tool_btn(self._t("Refresh all"), self.refresh_all))
+        tools_section.addWidget(_make_tool_btn(
+            self._t("Вернуть стандартный размер окна", "Reset window size"),
+            self._reset_window_size,
+        ))
 
         restart_btn = QPushButton(self._t("Configure again"))
         restart_btn.setObjectName("RestartOnboardingButton")
@@ -8476,20 +8918,51 @@ class MainWindow(QMainWindow):
                         app.removeEventFilter(self)
                     except Exception:
                         pass
-        if event.button() == Qt.MouseButton.LeftButton and event.position().y() <= 48:
+        if event.button() == Qt.MouseButton.LeftButton:
+            edge = self._frameless_edge_at(event.position().toPoint())
+            if edge:
+                # Резервный ресайз у края: если нативный WM_NCHITTEST
+                # не сработал, Qt получил бы обычное нажатие — ресайзим сами.
+                self._resize_edge = edge
+                self._resize_origin = event.globalPosition().toPoint()
+                self._resize_rect = QRect(self.geometry())
+                event.accept()
+                return
+        if event.button() == Qt.MouseButton.LeftButton and event.position().y() <= self._title_bar_height_for_drag():
             self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
             event.accept()
             return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self._resize_edge and self._resize_rect is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            self._apply_frameless_resize(event.globalPosition().toPoint() - self._resize_origin)
+            event.accept()
+            return
         if self._drag_pos is not None and event.buttons() & Qt.MouseButton.LeftButton:
             self.move(event.globalPosition().toPoint() - self._drag_pos)
             event.accept()
             return
+        if not event.buttons() & Qt.MouseButton.LeftButton:
+            # Курсоры ресайза для резервного режима: при работающем
+            # нативном hit-test этих событий у краёв нет вовсе и курсор
+            # рисует Windows сама.
+            edge = self._frameless_edge_at(event.position().toPoint())
+            if edge:
+                self.setCursor(self._frameless_edge_cursor(edge))
+            elif self.cursor().shape() in (
+                Qt.CursorShape.SizeHorCursor,
+                Qt.CursorShape.SizeVerCursor,
+                Qt.CursorShape.SizeFDiagCursor,
+                Qt.CursorShape.SizeBDiagCursor,
+            ):
+                self.unsetCursor()
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if self._resize_edge:
+            self._resize_edge = ""
+            self._resize_rect = None
         self._drag_pos = None
         super().mouseReleaseEvent(event)
 
@@ -8516,10 +8989,193 @@ class MainWindow(QMainWindow):
         event.accept()
         super().closeEvent(event)
 
+    def _frameless_edge_at(self, pos: QPoint) -> str:
+        """Зона изменения размера у края окна (логические пиксели).
+
+        Резервный, Qt-уровневый путь ресайза: работает, когда нативный
+        WM_NCHITTEST не отработал и Qt получил обычные мышиные события.
+        Возвращает комбинацию букв "l"/"r"/"t"/"b" или "".
+        """
+        if self.isMinimized():
+            return ""
+        border = self._FRAMELESS_RESIZE_BORDER
+        x, y = pos.x(), pos.y()
+        on_left = x <= border
+        on_right = x >= self.width() - border
+        on_top = y <= border
+        on_bottom = y >= self.height() - border
+        if on_top and on_left:
+            return "tl"
+        if on_top and on_right:
+            return "tr"
+        if on_left and on_bottom:
+            return "bl"
+        if on_right and on_bottom:
+            return "br"
+        if on_left:
+            return "l"
+        if on_right:
+            return "r"
+        if on_top:
+            return "t"
+        if on_bottom:
+            return "b"
+        return ""
+
+    @staticmethod
+    def _frameless_edge_cursor(edge: str):
+        shapes = {
+            "l": Qt.CursorShape.SizeHorCursor,
+            "r": Qt.CursorShape.SizeHorCursor,
+            "t": Qt.CursorShape.SizeVerCursor,
+            "b": Qt.CursorShape.SizeVerCursor,
+            "tl": Qt.CursorShape.SizeFDiagCursor,
+            "br": Qt.CursorShape.SizeFDiagCursor,
+            "tr": Qt.CursorShape.SizeBDiagCursor,
+            "bl": Qt.CursorShape.SizeBDiagCursor,
+        }
+        return shapes.get(edge, Qt.CursorShape.ArrowCursor)
+
+    def _apply_frameless_resize(self, delta: QPoint) -> None:
+        """Применяет перетаскивание края/угла к геометрии окна."""
+        start = self._resize_rect
+        if start is None:
+            return
+        edge = self._resize_edge
+        left, top = start.x(), start.y()
+        right = left + start.width()   # правая/нижняя границы — исключающие
+        bottom = top + start.height()
+        if "l" in edge:
+            left += delta.x()
+        if "r" in edge:
+            right += delta.x()
+        if "t" in edge:
+            top += delta.y()
+        if "b" in edge:
+            bottom += delta.y()
+        min_w, min_h = self.minimumWidth(), self.minimumHeight()
+        if right - left < min_w:
+            if "l" in edge:
+                left = right - min_w
+            else:
+                right = left + min_w
+        if bottom - top < min_h:
+            if "t" in edge:
+                top = bottom - min_h
+            else:
+                bottom = top + min_h
+        self.setGeometry(left, top, right - left, bottom - top)
+
+    def _ensure_frameless_resize_style(self) -> None:
+        """Включает WS_THICKFRAME для безрамочного окна.
+
+        Без этого стиля Windows не запускает цикл изменения размера, когда
+        WM_NCHITTEST возвращает HTLEFT/HTRIGHT/HTTOP/... — перетаскивание
+        за края молча игнорируется. Вызывается при каждом применении маски
+        (бит ставится один раз и дальше просто проверяется).
+        """
+        if sys.platform != "win32":
+            return
+        try:
+            from ctypes import wintypes as _wt
+
+            hwnd = int(self.winId())
+            if not hwnd or not ctypes.windll.user32.IsWindow(_wt.HWND(hwnd)):
+                return
+            user32 = ctypes.windll.user32
+            gwl_style = -16
+            ws_thickframe = 0x00040000
+            is_64 = ctypes.sizeof(ctypes.c_void_p) == 8
+            getter = user32.GetWindowLongPtrW if is_64 else user32.GetWindowLongW
+            setter = user32.SetWindowLongPtrW if is_64 else user32.SetWindowLongW
+            getter.argtypes = (_wt.HWND, ctypes.c_int)
+            getter.restype = ctypes.c_ssize_t
+            setter.argtypes = (_wt.HWND, ctypes.c_int, ctypes.c_ssize_t)
+            setter.restype = ctypes.c_ssize_t
+            style = int(getter(_wt.HWND(hwnd), gwl_style))
+            if style & ws_thickframe:
+                return
+            setter(_wt.HWND(hwnd), gwl_style, style | ws_thickframe)
+            swp_flags = 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020  # NOSIZE|NOMOVE|NOZORDER|NOACTIVATE|FRAMECHANGED
+            user32.SetWindowPos(_wt.HWND(hwnd), _wt.HWND(0), 0, 0, 0, 0, swp_flags)
+            _startup_trace("MainWindow: WS_THICKFRAME enabled (frameless resize)")
+        except Exception as error:
+            _startup_trace(f"MainWindow: WS_THICKFRAME setup failed: {error!r}")
+
+    def _frameless_hit_test(self, hwnd: int, lparam: int) -> int:
+        """WM_NCHITTEST: зоны изменения размера у безрамочного окна.
+
+        Возвращает HT*-коды (10..17) для краёв/углов в пределах ~6px
+        физических пикселей, 0 — если попадание обычное (клиентская
+        область, тогда работает штатная логика перетаскивания заголовка).
+        Координаты из lParam и прямоугольник окна берутся в физических
+        пикселях, поэтому HiDPI учитывается только при масштабировании
+        толщины рамки.
+        """
+        from ctypes import wintypes
+
+        try:
+            rect = wintypes.RECT()
+            if not ctypes.windll.user32.GetWindowRect(wintypes.HWND(hwnd), ctypes.byref(rect)):
+                return 0
+            lp = int(lparam)
+            x = lp & 0xFFFF
+            if x >= 0x8000:
+                x -= 0x10000
+            y = (lp >> 16) & 0xFFFF
+            if y >= 0x8000:
+                y -= 0x10000
+            left = int(rect.left)
+            top = int(rect.top)
+            width = int(rect.right) - left
+            height = int(rect.bottom) - top
+            if width <= 0 or height <= 0:
+                return 0
+            lx = x - left
+            ly = y - top
+            try:
+                dpr = float(self.devicePixelRatioF())
+            except Exception:
+                dpr = 1.0
+            border = max(4, int(round(6.0 * dpr)))
+            on_left = lx <= border
+            on_right = lx >= width - border
+            on_top = ly <= border
+            on_bottom = ly >= height - border
+            if on_top and on_left:
+                return 14  # HTTOPLEFT
+            if on_top and on_right:
+                return 15  # HTTOPRIGHT
+            if on_bottom and on_left:
+                return 16  # HTBOTTOMLEFT
+            if on_bottom and on_right:
+                return 17  # HTBOTTOMRIGHT
+            if on_left:
+                return 10  # HTLEFT
+            if on_right:
+                return 11  # HTRIGHT
+            if on_top:
+                return 12  # HTTOP
+            if on_bottom:
+                return 13  # HTBOTTOM
+        except Exception:
+            return 0
+        return 0
+
     def nativeEvent(self, eventType: QByteArray, message: int) -> tuple[bool, int]:
         if sys.platform.startswith("win"):
             try:
                 msg = ctypes.wintypes.MSG.from_address(int(message))  # type: ignore[attr-defined]
+                if int(msg.message) == 0x0084 and not self.isMinimized():
+                    # WM_NCHITTEST: родные рамки изменения размера для
+                    # безрамочного окна (курсоры и поведение как у обычного
+                    # окна Windows, включая углы; минимум окна соблюдается
+                    # через WM_GETMINMAXINFO).
+                    # NB: поле MSG называется hWnd (с большой W) — msg.hwnd
+                    # бросает AttributeError, который раньше глотался ниже.
+                    hit = self._frameless_hit_test(int(msg.hWnd), int(msg.lParam))
+                    if hit:
+                        return True, hit
                 taskbar_id = getattr(self, "_taskbar_created_message", 0)
                 if taskbar_id and int(msg.message) == int(taskbar_id):
                     QTimer.singleShot(0, lambda: self._refresh_tray_icon(kick=True))
@@ -8532,8 +9188,8 @@ class MainWindow(QMainWindow):
                         QTimer.singleShot(0, self._handle_system_suspend)
                     elif int(msg.wParam) in {pbt_apmresumeautomatic, pbt_apmresumesuspend}:
                         QTimer.singleShot(1200, self._handle_system_resume)
-            except Exception:
-                pass
+            except Exception as error:
+                _startup_trace(f"MainWindow: nativeEvent error: {error!r}")
         return super().nativeEvent(eventType, message)
 
     def _handle_system_suspend(self) -> None:
@@ -8753,6 +9409,11 @@ class MainWindow(QMainWindow):
         return
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self._sidebar_host or watched is self._sidebar_panel:
+            if event.type() == QEvent.Type.Enter:
+                self._on_sidebar_hover_enter()
+            elif event.type() == QEvent.Type.Leave:
+                self._on_sidebar_hover_leave()
         if watched is self._file_tag_input and isinstance(event, QKeyEvent) and event.type() == QEvent.Type.KeyPress:
             if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Comma, Qt.Key.Key_Semicolon):
                 self._commit_tag_input()
@@ -8877,6 +9538,10 @@ class MainWindow(QMainWindow):
     def _sync_nav_highlight(self, *, animated: bool) -> None:
         sidebar = self.findChild(SidebarPanel, "Sidebar")
         if sidebar is None:
+            return
+        if not (self._sidebar_stored_visible or self._sidebar_hover_peek):
+            # Сайдбар свёрнут в полоску: подсветка не нужна.
+            sidebar.clear_highlight()
             return
         current = next((btn for btn in self._nav_buttons if btn.isChecked()), None)
         if current is None:
@@ -9845,6 +10510,9 @@ class MainWindow(QMainWindow):
         if sidebar is not None:
             sidebar.set_theme(theme)
             sidebar.set_accent_color(QColor(accent))
+        # Inline-стиль тонкой полоски свёрнутого сайдбара зависит от темы —
+        # обновляем его вместе с темой.
+        self._apply_sidebar_strip_style(not self._sidebar_visible)
         tab_bar = self.findChild(_SettingsTabBar, "SettingsTabBar")
         if tab_bar is not None:
             tab_bar.set_accent(QColor(accent))
@@ -10166,7 +10834,6 @@ class MainWindow(QMainWindow):
         for index, btn in enumerate(self._nav_buttons):
             if index < len(nav_tooltips):
                 btn.setToolTip(nav_tooltips[index])
-
 
         if getattr(self, "_settings_btn", None) is not None:
             self._settings_btn.setToolTip(self._t("Settings"))
@@ -13556,6 +14223,12 @@ class MainWindow(QMainWindow):
         sidebar = self.findChild(SidebarPanel, "Sidebar")
         if sidebar is not None:
             sidebar.clear_highlight()
+        # Ширина сайдбара могла измениться, пока он был скрыт онбордингом
+        # (например, окно сузилось ниже порога) — применяем заново.
+        # Временный «выезд» по наведению тоже сбрасываем: мыши давно нет
+        # над полоской, а событий Leave во время скрытия могло не прийти.
+        self._sidebar_hover_peek = False
+        self._sync_sidebar_state(animated=False)
         self._sync_nav_highlight(animated=False)
 
     def _clear_onboarding_intro_transition_overlay(self) -> None:
