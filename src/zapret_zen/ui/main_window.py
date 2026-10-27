@@ -4499,6 +4499,7 @@ class MainWindow(QMainWindow):
         self._last_prompted_update_version = ""
         self._compositor_fallback_applied = True
         self._native_corner_rounding = True
+        self._dwm_corner_failure_traced = False
         self._corner_style_rounded: bool | None = None
         self._sidebar_host = None
         self._sidebar_panel = None
@@ -4513,6 +4514,9 @@ class MainWindow(QMainWindow):
         self._resize_edge = ""
         self._resize_origin = QPoint()
         self._resize_rect: QRect | None = None
+        self._in_native_resize = False            # идёт нативный цикл WM_SIZING
+        self._pending_resize_refreshes: list = []  # отложенные обновления страниц
+        self._resize_refresh_flush_scheduled = False
         self._resume_component_ids: list[str] = []
         self._resume_restart_pending = False
         self._partial_restart_count = 0
@@ -5576,17 +5580,57 @@ class MainWindow(QMainWindow):
         self._apply_content_surface_mask()
         self._relayout_onboarding_content()
         self._sync_power_aura_geometry()
+        # Отложенные обновления страниц идут через _defer_resize_refresh:
+        # во время нативного ресайза они копятся и выполняются один раз
+        # после WM_EXITSIZEMOVE, а не по разу на каждое WM_SIZING.
         if hasattr(self, "pages") and self.pages.currentIndex() == 1:
-            QTimer.singleShot(0, self.refresh_services)
+            self._defer_resize_refresh(self.refresh_services)
         elif hasattr(self, "pages") and self.pages.currentIndex() == 2:
-            QTimer.singleShot(0, self._sync_mod_card_layout)
+            self._defer_resize_refresh(self._sync_mod_card_layout)
         elif hasattr(self, "pages") and self.pages.currentIndex() == 3:
-            QTimer.singleShot(0, self._sync_settings_components_if_visible)
+            self._defer_resize_refresh(self._sync_settings_components_if_visible)
         if self._file_mode_stack is not None:
             if self._file_mode_stack.currentIndex() == 0:
-                QTimer.singleShot(0, self._sync_files_home_layout)
+                self._defer_resize_refresh(self._sync_files_home_layout)
             elif self._file_mode_stack.currentIndex() == 1:
-                QTimer.singleShot(0, self._sync_file_tag_canvas_geometry)
+                self._defer_resize_refresh(self._sync_file_tag_canvas_geometry)
+
+    def _defer_resize_refresh(self, refresh) -> None:
+        """Копит отложенные обновления страницы во время ресайза.
+
+        refresh_services стоит 20-25 мс, а resizeEvent за время
+        перетаскивания вызывается десятки раз: выполнение сразу давало
+        серию долгих вызовов внутри WM_SIZING и рывки окна. Пока идёт
+        нативный цикл ресайза (WM_ENTERSIZEMOVE...WM_EXITSIZEMOVE),
+        вызовы только накапливаются; вне цикла выполняются одним
+        отложенным проходом (дубликаты не плодятся).
+        """
+        pending = self._pending_resize_refreshes
+        # Дедупликация: у bound-метода каждый доступ (self.refresh_services)
+        # даёт НОВЫЙ объект, поэтому сравнивать через is нельзя — берём
+        # __func__ исходной функции.
+        key = getattr(refresh, "__func__", refresh)
+        if not any(getattr(item, "__func__", item) is key for item in pending):
+            pending.append(refresh)
+        if self._in_native_resize:
+            return
+        self._schedule_resize_refresh_flush()
+
+    def _schedule_resize_refresh_flush(self) -> None:
+        if self._resize_refresh_flush_scheduled:
+            return
+        self._resize_refresh_flush_scheduled = True
+        QTimer.singleShot(0, self._flush_resize_refreshes)
+
+    def _flush_resize_refreshes(self) -> None:
+        self._resize_refresh_flush_scheduled = False
+        pending = self._pending_resize_refreshes
+        self._pending_resize_refreshes = []
+        for refresh in pending:
+            try:
+                refresh()
+            except Exception as error:
+                _startup_trace(f"MainWindow: deferred resize refresh failed: {error!r}")
 
     def changeEvent(self, event: QEvent) -> None:
         super().changeEvent(event)
@@ -5721,16 +5765,30 @@ class MainWindow(QMainWindow):
                 hwnd, 33, ctypes.byref(value), ctypes.sizeof(value)
             )
             if result != 0:
-                _startup_trace(f"MainWindow: DwmSetWindowAttribute rc={result}")
+                # На Windows 10 атрибута скругления нет и вызов «падает»
+                # на каждом resizeEvent — логируем только первое падение,
+                # иначе запись в файл идёт каждый кадр ресайза.
+                if not getattr(self, "_dwm_corner_failure_traced", False):
+                    _startup_trace(f"MainWindow: DwmSetWindowAttribute rc={result}")
+                    self._dwm_corner_failure_traced = True
                 return False
             ex_style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
             is_layered = bool(ex_style & WS_EX_LAYERED)
-            _startup_trace(
-                f"MainWindow: DWM corner rounding requested, WS_EX_LAYERED={is_layered}"
+            recovered = getattr(self, "_dwm_corner_failure_traced", False) or not bool(
+                getattr(self, "_native_corner_rounding", True)
             )
+            if recovered:
+                # Логируем только выход из состояния «скругление
+                # недоступно», а не каждый resizeEvent.
+                _startup_trace(
+                    f"MainWindow: DWM corner rounding requested, WS_EX_LAYERED={is_layered}"
+                )
+            self._dwm_corner_failure_traced = False
             return not is_layered
         except Exception as error:
-            _startup_trace(f"MainWindow: DWM corners unavailable: {error!r}")
+            if not getattr(self, "_dwm_corner_failure_traced", False):
+                _startup_trace(f"MainWindow: DWM corners unavailable: {error!r}")
+                self._dwm_corner_failure_traced = True
             return False
 
     def _apply_opaque_window_mask(self) -> None:
@@ -5740,10 +5798,15 @@ class MainWindow(QMainWindow):
             # state (a resizeEvent with the minimized geometry would otherwise
             # re-apply the region mask mid-transition). Re-applied on next show.
             return
+        # Трассировка — только при смене состояния углов: раньше эти
+        # _startup_trace (запись в файл) выполнялись на каждый resizeEvent
+        # и давали ~1 мс накладных расходов на кадр ресайза.
+        prev_rounded = bool(getattr(self, "_native_corner_rounding", True))
         if self._try_dwm_rounded_corners():
             self._native_corner_rounding = True
             self.clearMask()
-            _startup_trace("MainWindow: using DWM rounded corners, mask cleared")
+            if not prev_rounded:
+                _startup_trace("MainWindow: using DWM rounded corners, mask cleared")
         else:
             # Windows 10 и старше (или DWM-скругление недоступно): системного
             # скругления нет. Оставляем прямые углы — родной вид окна Windows 10.
@@ -5751,7 +5814,8 @@ class MainWindow(QMainWindow):
             # выглядит грубо и даёт «лесенку» по краям.
             self._native_corner_rounding = False
             self.clearMask()
-            _startup_trace("MainWindow: square window corners (native Win10, no mask)")
+            if prev_rounded:
+                _startup_trace("MainWindow: square window corners (native Win10, no mask)")
         self._sync_window_corner_style()
         self._ensure_frameless_resize_style()
 
@@ -9142,10 +9206,17 @@ class MainWindow(QMainWindow):
             on_right = lx >= width - border
             on_top = ly <= border
             on_bottom = ly >= height - border
+            # Константы winuser.h (проверено эмпирически: система читает
+            # WM_NCHITTEST как есть и пускает цикл ресайза по формуле
+            # WMSZ = HT - 9): HTLEFT=10 HTRIGHT=11 HTTOP=12 HTTOPLEFT=13
+            # HTTOPRIGHT=14 HTBOTTOM=15 HTBOTTOMLEFT=16 HTBOTTOMRIGHT=17.
+            # Раньше для TL/TR/BOTTOM стояли 14/15/13: система видела
+            # HTTOPRIGHT/HTBOTTOM/HTTOPLEFT — нижний край двигал верхний
+            # левый угол, а углы «инвертировались» при перетаскивании.
             if on_top and on_left:
-                return 14  # HTTOPLEFT
+                return 13  # HTTOPLEFT
             if on_top and on_right:
-                return 15  # HTTOPRIGHT
+                return 14  # HTTOPRIGHT
             if on_bottom and on_left:
                 return 16  # HTBOTTOMLEFT
             if on_bottom and on_right:
@@ -9157,7 +9228,7 @@ class MainWindow(QMainWindow):
             if on_top:
                 return 12  # HTTOP
             if on_bottom:
-                return 13  # HTBOTTOM
+                return 15  # HTBOTTOM
         except Exception:
             return 0
         return 0
@@ -9166,7 +9237,18 @@ class MainWindow(QMainWindow):
         if sys.platform.startswith("win"):
             try:
                 msg = ctypes.wintypes.MSG.from_address(int(message))  # type: ignore[attr-defined]
-                if int(msg.message) == 0x0084 and not self.isMinimized():
+                message_id = int(msg.message)
+                if message_id == 0x0231:
+                    # WM_ENTERSIZEMOVE: нативный цикл ресайза начался —
+                    # тяжёлые отложенные обновления страниц придерживаем.
+                    self._in_native_resize = True
+                elif message_id == 0x0232:
+                    # WM_EXITSIZEMOVE: цикл ресайза завершён — выполняем
+                    # накопленные обновления страниц один раз.
+                    self._in_native_resize = False
+                    if getattr(self, "_pending_resize_refreshes", None):
+                        self._schedule_resize_refresh_flush()
+                if message_id == 0x0084 and not self.isMinimized():
                     # WM_NCHITTEST: родные рамки изменения размера для
                     # безрамочного окна (курсоры и поведение как у обычного
                     # окна Windows, включая углы; минимум окна соблюдается
