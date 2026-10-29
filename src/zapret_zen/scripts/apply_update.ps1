@@ -96,8 +96,10 @@ if (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue) {
   }
 }
 
-try { sc stop zapret *> $null } catch {}
-try { sc delete zapret *> $null } catch {}
+# sc.exe, а НЕ sc: в PowerShell sc — алиас Set-Content, он создавал файл
+# "stop"/"delete" с содержимым zapret вместо управления сервисом.
+try { sc.exe stop zapret *> $null } catch {}
+try { sc.exe delete zapret *> $null } catch {}
 foreach ($image in @('zapret_zen.exe', 'TgWsProxy_windows.exe', 'winws.exe')) {
   try { taskkill /F /T /IM $image *> $null } catch {}
 }
