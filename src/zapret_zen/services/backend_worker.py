@@ -107,10 +107,28 @@ def _host_file_records(context) -> list[FileRecord]:
         relative = str(path)
     return [FileRecord(path=str(path), relative_path=relative, size=path.stat().st_size)]
 
+# The worker processes tasks sequentially in a single thread, so a simple
+# module-level slot for the current task's progress emitter is safe. It lets
+# low-level restart helpers report "zapret is restarting" to the UI without
+# threading emit_progress through every call site and context manager.
+_current_emit_progress: dict[str, Any] = {}
+
+
+def _emit_zapret_restart_progress() -> None:
+    emit = _current_emit_progress.get("fn")
+    if emit is None:
+        return
+    try:
+        emit({"zapret_restart": True})
+    except Exception:
+        pass
+
+
 def _stop_zapret_for_reconfiguration(context) -> bool:
     states = {item.component_id: item for item in context.processes.list_states()}
     was_running = bool(states.get("zapret") and states["zapret"].status == "running")
     if was_running:
+        _emit_zapret_restart_progress()
         context.processes.stop_component("zapret")
     return was_running
 
@@ -120,6 +138,7 @@ def _finish_zapret_reconfiguration(context, *, restart: bool) -> bool:
     context.files.rebuild_materialized_collections()
     context.processes.rebuild_zapret_runtime_snapshot()
     if restart:
+        _emit_zapret_restart_progress()
         state = context.processes.start_component("zapret")
         return bool(getattr(state, "status", "") == "running")
     return False
@@ -354,7 +373,11 @@ def _run_action(context, action: str, payload: dict[str, Any], emit_progress: ca
     handler = _ACTION_HANDLERS.get(action)
     if handler is None:
         return {}
-    return handler(context, payload, emit_progress)
+    _current_emit_progress["fn"] = emit_progress
+    try:
+        return handler(context, payload, emit_progress)
+    finally:
+        _current_emit_progress.pop("fn", None)
 
 
 # ---------------------------------------------------------------------------
@@ -1164,6 +1187,9 @@ def _handle_run_settings_diagnostics(context, payload, emit_progress):
 
 @_register_action("update_zapret_runtime")
 def _handle_update_zapret_runtime(context, payload, emit_progress):
+    states = {item.component_id: item for item in context.processes.list_states()}
+    if states.get("zapret") and states["zapret"].status == "running":
+        _emit_zapret_restart_progress()
     result = context.processes.update_zapret_runtime()
     result.update(_snapshot(context))
     return result

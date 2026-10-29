@@ -4370,6 +4370,14 @@ class MainWindow(QMainWindow):
         self._isolated_profile_benchmark: dict[str, object] | None = None
         self._isolated_profile_benchmark_task_id: str | None = None
         self._strategy_selection_active = False
+        self._zapret_restart_active = False
+        self._zapret_restart_task_ids: set[str] = set()
+        self._zapret_restart_badge: QFrame | None = None
+        self._zapret_restart_dot: QLabel | None = None
+        self._zapret_restart_badge_label: QLabel | None = None
+        self._zapret_restart_pulse: QVariantAnimation | None = None
+        self._title_bar_row: QHBoxLayout | None = None
+        self._dash_restart_layout: QHBoxLayout | None = None
         self._mod_welcome_shown_signatures: set[tuple[str, str]] = set()
         self._first_general_prompt: AppDialog | None = None
         self._onboarding_active = False
@@ -5917,6 +5925,34 @@ class MainWindow(QMainWindow):
         row.addWidget(author, 0, Qt.AlignmentFlag.AlignVCenter)
         row.addStretch(1)
 
+        # Капсула «Перезапуск Zapret…» — стилизована под капсулу статуса на
+        # дашборде (ToggleStatusCard: modBadge + пульсирующая точка + подпись).
+        # Вне дашборда она lives в титлбаре (видна на всех страницах), а на
+        # дашборде переезжает на место статусной капсулы — см.
+        # _place_zapret_restart_capsule(). Показывается, пока backend реально
+        # перезапускает zapret (событие task_progress zapret_restart).
+        self._title_bar_row = row
+        zapret_badge = QFrame()
+        zapret_badge.setProperty("class", "modBadge")
+        zapret_badge.setObjectName("ToggleStatusCard")
+        zapret_badge.setFixedHeight(28)
+        zapret_badge_layout = QHBoxLayout(zapret_badge)
+        zapret_badge_layout.setContentsMargins(10, 3, 10, 3)
+        zapret_dot = QLabel()
+        zapret_dot.setFixedSize(6, 6)
+        zapret_dot.setObjectName("ToggleStatusDot")
+        zapret_badge_label = QLabel(self._t("Перезапуск Zapret…", "Restarting Zapret…"))
+        zapret_badge_label.setProperty("class", "muted")
+        zapret_badge_label.setObjectName("ToggleStatusLabel")
+        zapret_badge_layout.addWidget(zapret_dot)
+        zapret_badge_layout.addSpacing(4)
+        zapret_badge_layout.addWidget(zapret_badge_label)
+        zapret_badge.hide()
+        self._zapret_restart_badge = zapret_badge
+        self._zapret_restart_dot = zapret_dot
+        self._zapret_restart_badge_label = zapret_badge_label
+        row.addWidget(zapret_badge, 0, Qt.AlignmentFlag.AlignVCenter)
+
         min_btn = self._window_btn("", "min")
         self._min_btn = min_btn
         min_btn.setIconSize(QSize(15, 15))
@@ -6834,6 +6870,9 @@ class MainWindow(QMainWindow):
         lw.setContentsMargins(0, 0, 0, 0)
         lw.addWidget(self._toggle_status_card)
         lw.addStretch(1)
+        # Host для капсулы перезапуска zapret на дашборде — занимает то же место,
+        # что и статусная капсула (слева, под кнопкой питания).
+        self._dash_restart_layout = lw
 
         badges_row = QHBoxLayout()
         badges_row.setContentsMargins(0, 0, 0, 0)
@@ -9593,6 +9632,9 @@ class MainWindow(QMainWindow):
                 self._mark_dirty(section)
             else:
                 self._schedule_dirty_refresh()
+            # Переставляем капсулу перезапуска zapret под новую страницу.
+            if self._zapret_restart_active:
+                self._sync_zapret_restart_indicator(page_index=index)
         except Exception as error:
             self.context.logging.log("error", "switch_page_failed", index=index, error=str(error))
             self._cancel_page_transition()
@@ -9956,6 +9998,7 @@ class MainWindow(QMainWindow):
         task_id = str(message.get("id", ""))
         action = str(message.get("action", ""))
         action_id = self._backend_tasks.pop(task_id, action)
+        self._set_zapret_restart_active(False, task_id=task_id)
         task_gen = self._task_generation.pop(task_id, 0)
         payload = message.get("payload", {})
         service_response_revision = 0
@@ -10287,6 +10330,7 @@ class MainWindow(QMainWindow):
         task_id = str(message.get("id", ""))
         action = str(message.get("action", ""))
         action_id = self._backend_tasks.pop(task_id, action)
+        self._set_zapret_restart_active(False, task_id=task_id)
         source = self._backend_error_source(action, str(message.get("source", "") or ""))
         raw_error = str(message.get("error", self._t("Unknown error.")))
         error = self._friendly_backend_error(raw_error, source=source, action=action)
@@ -10486,7 +10530,10 @@ class MainWindow(QMainWindow):
 
     def _on_backend_task_progress(self, message: dict) -> None:
         action = str(message.get("action", ""))
+        task_id = str(message.get("id", ""))
         payload = message.get("payload", {})
+        if isinstance(payload, dict) and payload.get("zapret_restart"):
+            self._set_zapret_restart_active(True, task_id=task_id)
         if action == "toggle_master_runtime" and isinstance(payload, dict):
             status = payload.get("status", "")
             if status:
@@ -10607,6 +10654,9 @@ class MainWindow(QMainWindow):
             self._github_sidebar_btn.setIcon(self._icon("github.svg"))
             self._github_sidebar_btn.set_button_theme(theme)
             self._github_sidebar_btn.set_accent_color(accent)
+        if self._zapret_restart_active and self._zapret_restart_badge is not None:
+            # Акцент точки перезапуска зависит от темы — перезапускаем пульс.
+            self._start_zapret_restart_pulse()
         for overlay in self._scroll_fade_overlays[:]:
             try:
                 overlay.set_theme(theme)
@@ -10916,6 +10966,9 @@ class MainWindow(QMainWindow):
         for index, btn in enumerate(self._nav_buttons):
             if index < len(nav_tooltips):
                 btn.setToolTip(nav_tooltips[index])
+
+        if self._zapret_restart_badge_label is not None:
+            self._zapret_restart_badge_label.setText(self._t("Перезапуск Zapret…", "Restarting Zapret…"))
 
         if getattr(self, "_settings_btn", None) is not None:
             self._settings_btn.setToolTip(self._t("Settings"))
@@ -13871,6 +13924,116 @@ class MainWindow(QMainWindow):
             "off": ("#334155" if light else "#b4bfcd", "#526071" if light else "#8793a4", 14),
         }
         return colors.get(state, colors["off"])
+
+    def _set_zapret_restart_active(self, active: bool, *, task_id: str = "") -> None:
+        """Показывает/скрывает индикатор перезапуска zapret.
+
+        Активность учитывается по набору task_id: индикатор гаснет только когда
+        завершились все задачи, заявлявшие перезапуск.
+        """
+        if active:
+            if task_id:
+                self._zapret_restart_task_ids.add(task_id)
+            self._zapret_restart_active = True
+        else:
+            if task_id:
+                self._zapret_restart_task_ids.discard(task_id)
+            if self._zapret_restart_task_ids:
+                # Остались ещё активные задачи с перезапуском — не гасим.
+                return
+            self._zapret_restart_active = False
+        self._sync_zapret_restart_indicator()
+
+    def _sync_zapret_restart_indicator(self, *, page_index: int | None = None) -> None:
+        active = self._zapret_restart_active
+        badge = self._zapret_restart_badge
+        if badge is not None:
+            if active:
+                self._place_zapret_restart_capsule(page_index=page_index)
+                badge.setVisible(True)
+                self._start_zapret_restart_pulse()
+            else:
+                badge.setVisible(False)
+                self._stop_zapret_restart_pulse()
+        # Спиннер на кнопке питания — только на дашборде. Не перехватываем
+        # состояние подбора стратегии: если оно активно, кнопку не трогаем.
+        on_dashboard = (self._current_page_index() if page_index is None else int(page_index)) == 0
+        power_button = getattr(self, "power_button", None)
+        if not self._strategy_selection_active and isinstance(power_button, AnimatedPowerButton):
+            power_button.set_diagnostic_inactive(bool(active and on_dashboard))
+
+    def _current_page_index(self) -> int:
+        pages = getattr(self, "pages", None)
+        if pages is None:
+            return 0
+        try:
+            return int(pages.currentIndex())
+        except Exception:
+            return 0
+
+    def _place_zapret_restart_capsule(self, *, page_index: int | None = None) -> None:
+        """Переносит капсулу перезапуска в нужное место.
+
+        На дашборде (страница 0) — на место статусной капсулы (left_wing, слева
+        под кнопкой питания). На остальных страницах — в титлбар (видна всегда).
+        """
+        badge = self._zapret_restart_badge
+        if badge is None:
+            return
+        on_dashboard = (self._current_page_index() if page_index is None else int(page_index)) == 0
+        target = self._dash_restart_layout if on_dashboard else self._title_bar_row
+        if target is None:
+            return
+        # Уже в нужном хосте — не трогаем (избежать лишних relayout).
+        if target.indexOf(badge) != -1:
+            return
+        # Отсоединяем от любого предыдущего хоста.
+        for host in (self._title_bar_row, self._dash_restart_layout):
+            if host is not None and host.indexOf(badge) != -1:
+                host.removeWidget(badge)
+        badge.setParent(None)
+        if on_dashboard:
+            target.insertWidget(0, badge, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        else:
+            # В титлбаре — сразу перед кнопками окна (после stretch).
+            index = target.indexOf(self._min_btn) if self._min_btn is not None else -1
+            if index == -1:
+                target.addWidget(badge, 0, Qt.AlignmentFlag.AlignVCenter)
+            else:
+                target.insertWidget(index, badge, 0, Qt.AlignmentFlag.AlignVCenter)
+
+    def _start_zapret_restart_pulse(self) -> None:
+        if self._zapret_restart_pulse is not None:
+            self._zapret_restart_pulse.stop()
+        dot = self._zapret_restart_dot
+        if dot is None:
+            return
+        settings = self.context.settings.get()
+        accent = QColor(settings.accent_color)
+
+        def on_value(val: float) -> None:
+            c = QColor(accent)
+            c.setAlphaF(0.3 + 0.7 * val)
+            dot.setStyleSheet(
+                f"background: {c.name(QColor.NameFormat.HexArgb)}; border-radius: 3px;"
+            )
+
+        anim = QVariantAnimation(self)
+        anim.setDuration(800)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setLoopCount(-1)
+        anim.valueChanged.connect(on_value)
+        anim.setEasingCurve(QEasingCurve.Type.SineCurve)
+        anim.start()
+        self._zapret_restart_pulse = anim
+
+    def _stop_zapret_restart_pulse(self) -> None:
+        if self._zapret_restart_pulse is not None:
+            self._zapret_restart_pulse.stop()
+            self._zapret_restart_pulse = None
+        if self._zapret_restart_dot is not None:
+            self._zapret_restart_dot.setStyleSheet("")
 
     def _set_strategy_selection_active(self, active: bool, *, current: int = 0, total: int = 0) -> None:
         if active:
