@@ -56,6 +56,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QSizePolicy,
     QScrollArea,
+    QSlider,
     QStackedLayout,
     QStackedWidget,
     QSystemTrayIcon,
@@ -267,6 +268,7 @@ class _UiSignals(QObject):
     update_check_progress = Signal(object)
     update_prepare_done = Signal(object)
     update_prepare_progress = Signal(object)
+    update_stage_done = Signal(object)
     page_payload_ready = Signal(str, object)
 
 
@@ -4324,6 +4326,7 @@ class MainWindow(QMainWindow):
         self._ui_signals.update_check_progress.connect(self._on_update_check_progress)
         self._ui_signals.update_prepare_done.connect(self._on_update_prepare_done)
         self._ui_signals.update_prepare_progress.connect(self._on_update_prepare_progress)
+        self._ui_signals.update_stage_done.connect(self._on_update_stage_done)
         self._ui_signals.page_payload_ready.connect(self._on_page_payload_ready)
         self._updating_general_combo = False
         self._pending_info_message: tuple[str, str] | None = None
@@ -4494,6 +4497,7 @@ class MainWindow(QMainWindow):
         self._tray_general_menu: QMenu | None = None
         self._tray_general_action_group: QActionGroup | None = None
         self._update_check_in_progress = False
+        self._update_stage_in_progress = False
         self._update_prepare_dialog: AppDialog | None = None
         self._update_prepare_cancelled = False
         self._update_prepare_status_label: QLabel | None = None
@@ -7868,7 +7872,7 @@ class MainWindow(QMainWindow):
         settings = self.context.settings.get()
         ui_language = settings.language
 
-        app_section = _section("")
+        app_section = _section(self._t("Основные", "General"))
         mode_items = [
             (self._t("Light"), "light"),
             (self._t("Dark"), "dark"),
@@ -7931,6 +7935,9 @@ class MainWindow(QMainWindow):
         lang_w, _ = _segment(lang_items, settings.language, "language")
         app_section.addWidget(QLabel(self._t("Language")))
         app_section.addWidget(lang_w)
+
+        # Блок остальных чекбокс-опций — под заголовком, как Тема/Язык.
+        app_section.addWidget(QLabel(self._t("Options")))
         autostart_cb = QCheckBox(self._t("Run with Windows"))
         autostart_cb.setChecked(settings.autostart_windows)
         ctrl["autostart"] = autostart_cb
@@ -7943,10 +7950,6 @@ class MainWindow(QMainWindow):
         auto_comp_cb.setChecked(settings.auto_run_components)
         ctrl["auto_components"] = auto_comp_cb
         app_section.addWidget(auto_comp_cb)
-        check_upd_cb = QCheckBox(self._t("Check for updates"))
-        check_upd_cb.setChecked(settings.check_updates_on_start)
-        ctrl["check_updates"] = check_upd_cb
-        app_section.addWidget(check_upd_cb)
         tray_notif_cb = QCheckBox(self._t("Tray notifications"))
         tray_notif_cb.setChecked(settings.tray_notifications_enabled)
         ctrl["tray_notifications"] = tray_notif_cb
@@ -7956,13 +7959,68 @@ class MainWindow(QMainWindow):
         ctrl["discord_rpc"] = discord_rpc_cb
         app_section.addWidget(discord_rpc_cb)
 
+        # Разделитель между «Основными» и «Обновлениями» — тот же,
+        # что перед менеджером профилей.
+        _divider()
+
+        # --- Updates section: авто-обновление, ветка, слайдер бэкапов ---
+        updates_section = _section(self._t("Обновления", "Updates"))
+        check_upd_cb = QCheckBox(self._t("Auto-update"))
+        check_upd_cb.setChecked(settings.auto_update_enabled)
+        ctrl["check_updates"] = check_upd_cb
+        updates_section.addWidget(check_upd_cb)
+
         branch_items = [
             (self._t("Release"), "release"),
             (self._t("Pre-release"), "prerelease"),
         ]
         branch_w, _ = _segment(branch_items, settings.update_branch, "update_branch")
-        app_section.addWidget(QLabel(self._t("Update branch")))
-        app_section.addWidget(branch_w)
+        updates_section.addWidget(QLabel(self._t("Update branch")))
+        updates_section.addWidget(branch_w)
+
+        slider_row = QWidget()
+        slider_row.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+        slider_layout = QHBoxLayout(slider_row)
+        slider_layout.setContentsMargins(0, 0, 0, 0)
+        slider_layout.setSpacing(10)
+        backup_slider = QSlider(Qt.Orientation.Horizontal)
+        backup_slider.setRange(1, 5)
+        backup_slider.setSingleStep(1)
+        backup_slider.setPageStep(1)
+        backup_slider.setValue(max(1, min(5, int(settings.update_backup_keep_count))))
+        backup_slider.setCursor(Qt.CursorShape.PointingHandCursor)
+        backup_value_lbl = QLabel(str(backup_slider.value()))
+        backup_value_lbl.setProperty("class", "subtitle")
+        backup_value_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        backup_value_lbl.setMinimumWidth(18)
+        slider_layout.addWidget(QLabel(self._t("Сохраняемых бэкапов:", "Backups to keep:")))
+        slider_layout.addWidget(backup_slider, 1)
+        slider_layout.addWidget(backup_value_lbl)
+        updates_section.addWidget(slider_row)
+
+        # Live-пересчёт суммарного размера при движении слайдера.
+        backup_size_lbl = QLabel("")
+        backup_size_lbl.setProperty("class", "muted")
+        backup_size_lbl.setWordWrap(True)
+        updates_section.addWidget(backup_size_lbl)
+
+        def _refresh_backup_size(value: int) -> None:
+            backup_value_lbl.setText(str(value))
+            try:
+                total = self.context.update_backups.estimate_total_size(value)
+                from zapret_zen.domain import format_bytes
+                backup_size_lbl.setText(
+                    self._t(
+                        f"Примерный суммарный размер: {format_bytes(total)}",
+                        f"Approximate total size: {format_bytes(total)}",
+                    )
+                )
+            except Exception:
+                backup_size_lbl.setText("")
+
+        backup_slider.valueChanged.connect(_refresh_backup_size)
+        _refresh_backup_size(backup_slider.value())
+        ctrl["backup_keep"] = backup_slider
 
         # --- Profiles section ---
         _divider()
@@ -8476,6 +8534,10 @@ class MainWindow(QMainWindow):
         file_btn = _make_tool_btn(self._t("Install from file"), self._update_from_file)
         update_layout.addWidget(file_btn, 1)
         tools_section.addWidget(update_row)
+        tools_section.addWidget(_make_tool_btn(
+            self._t("Откат к бэкапу", "Rollback to backup"),
+            self._show_rollback_backup_dialog,
+        ))
         tools_section.addWidget(_make_tool_btn(self._t("Менеджер обновлений", "Update Manager"), self._show_update_manager))
         tools_section.addWidget(_make_tool_btn(self._t("Rebuild merged"), self._rebuild_runtime))
         tools_section.addWidget(_make_tool_btn(self._t("Refresh all"), self.refresh_all))
@@ -8684,6 +8746,9 @@ class MainWindow(QMainWindow):
             cb = all_ctrl.get(key)
             if isinstance(cb, QCheckBox):
                 cb.stateChanged.connect(_ctrl_changed)
+        backup_slider = all_ctrl.get("backup_keep")
+        if isinstance(backup_slider, QSlider):
+            backup_slider.valueChanged.connect(_schedule_ctrl_save)
         for seg_key in ("update_branch", "ipset_mode", "gaming_mode", "tg_media_mode"):
             grp = all_ctrl.get(seg_key)
             if isinstance(grp, QButtonGroup):
@@ -8783,7 +8848,12 @@ class MainWindow(QMainWindow):
             cb.setChecked(settings.auto_run_components)
         cb = ctrl.get("check_updates")
         if isinstance(cb, QCheckBox):
-            cb.setChecked(settings.check_updates_on_start)
+            cb.setChecked(settings.auto_update_enabled)
+        slider = ctrl.get("backup_keep")
+        if isinstance(slider, QSlider):
+            # Не блокируем сигналы: valueChanged обновляет live-подпись размера,
+            # а повторное сохранение того же значения безвредно (debounce).
+            slider.setValue(max(1, min(5, int(settings.update_backup_keep_count))))
         cb = ctrl.get("tray_notifications")
         if isinstance(cb, QCheckBox):
             cb.setChecked(settings.tray_notifications_enabled)
@@ -8892,7 +8962,10 @@ class MainWindow(QMainWindow):
             payload["auto_run_components"] = cb.isChecked()
         cb = ctrl.get("check_updates")
         if isinstance(cb, QCheckBox):
-            payload["check_updates_on_start"] = cb.isChecked()
+            payload["auto_update_enabled"] = cb.isChecked()
+        slider = ctrl.get("backup_keep")
+        if isinstance(slider, QSlider):
+            payload["update_backup_keep_count"] = max(1, min(5, int(slider.value())))
         cb = ctrl.get("tray_notifications")
         if isinstance(cb, QCheckBox):
             payload["tray_notifications_enabled"] = cb.isChecked()
@@ -12316,6 +12389,97 @@ class MainWindow(QMainWindow):
     def _rebuild_runtime(self) -> None:
         self._submit_backend_task("rebuild_merge_runtime", action_id="__merge_rebuild__")
 
+    def _show_rollback_backup_dialog(self) -> None:
+        """Модалка «Rollback to backup»: выбор бэкапа из списка + Start."""
+        from zapret_zen.domain import format_bytes
+
+        dialog = AppDialog(self, self.context, self._t("Откат к бэкапу", "Rollback to backup"))
+        try:
+            backups = self.context.update_backups.list_update_backups()
+        except Exception as error:
+            backups = []
+            self.context.logging.log("warning", "Rollback dialog: list failed", error=str(error))
+
+        if not backups:
+            empty = QLabel(self._t("Нет сохранённых бэкапов обновления.", "No update backups available."))
+            empty.setWordWrap(True)
+            dialog.body_layout.addWidget(empty)
+            close_btn = QPushButton(self._t("Закрыть", "Close"))
+            close_btn.setObjectName("DialogSecondaryButton")
+            close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            close_btn.setMinimumHeight(36)
+            close_btn.clicked.connect(dialog.reject)
+            dialog.body_layout.addWidget(close_btn)
+            dialog.exec()
+            return
+
+        info_lbl = QLabel(self._t(
+            "Выберите бэкап для восстановления файлов приложения. Персональные данные (data, mods, configs) не затрагиваются.",
+            "Select a backup to restore application files. Personal data (data, mods, configs) is not touched.",
+        ))
+        info_lbl.setWordWrap(True)
+        info_lbl.setProperty("class", "muted")
+        dialog.body_layout.addWidget(info_lbl)
+
+        combo = QComboBox()
+        combo.setMinimumHeight(36)
+        for item in backups:
+            created = str(item.created_at or "")[:19].replace("T", " ")
+            label = f"{item.version_from} — {created} — {format_bytes(item.size_bytes)}"
+            combo.addItem(label, item.id)
+        dialog.body_layout.addWidget(combo)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        btn_row.addStretch()
+        start_btn = QPushButton(self._t("Start"))
+        start_btn.setObjectName("DialogPrimaryButton")
+        start_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        start_btn.setMinimumHeight(36)
+        cancel_btn = QPushButton(self._t("Cancel"))
+        cancel_btn.setObjectName("DialogSecondaryButton")
+        cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        cancel_btn.setMinimumHeight(36)
+        cancel_btn.clicked.connect(dialog.reject)
+        btn_row.addWidget(start_btn)
+        btn_row.addWidget(cancel_btn)
+        dialog.body_layout.addLayout(btn_row)
+
+        def _start() -> None:
+            backup_id = str(combo.currentData() or "")
+            if not backup_id:
+                return
+            dialog.accept()
+            self._start_manual_rollback(backup_id)
+
+        start_btn.clicked.connect(_start)
+        dialog.exec()
+
+    def _start_manual_rollback(self, backup_id: str) -> None:
+        """Запускает ручной откат внешним скриптом и завершает приложение."""
+        from zapret_zen.services.update_guard import start_manual_rollback
+
+        try:
+            started = start_manual_rollback(backup_id)
+        except Exception as error:
+            self._show_error(self._t("Откат к бэкапу", "Rollback to backup"), str(error))
+            return
+        if not started:
+            self._show_error(
+                self._t("Откат к бэкапу", "Rollback to backup"),
+                self._t(
+                    "Не удалось запустить скрипт отката. Бэкап мог быть удалён.",
+                    "Failed to start the rollback script. The backup may have been removed.",
+                ),
+            )
+            return
+        self._toast_notification(
+            "success",
+            self._t("Откат к бэкапу", "Rollback to backup"),
+            self._t("Восстановление запущено, приложение перезапустится.", "Restoration started; the app will restart."),
+        )
+        self._quit_for_update()
+
     def _check_updates_popup(self) -> None:
         self._start_update_check(manual=True)
 
@@ -12357,11 +12521,53 @@ class MainWindow(QMainWindow):
         if self._launch_hidden:
             _startup_trace("MainWindow: _check_updates_on_start skipped (hidden)")
             return
-        if not self.context.settings.get().check_updates_on_start:
-            _startup_trace("MainWindow: _check_updates_on_start skipped (check_updates_on_start=False)")
+        if not self.context.settings.get().auto_update_enabled:
+            _startup_trace("MainWindow: _check_updates_on_start skipped (auto_update_enabled=False)")
             return
         _startup_trace("MainWindow: _check_updates_on_start launching update check")
         self._start_update_check(manual=False)
+
+    def _start_silent_update_stage(self, release: dict[str, str]) -> None:
+        """Тихая фоновая загрузка обновления в staging (без диалогов и прогресса)."""
+        if self._update_stage_in_progress:
+            return
+        if not isinstance(release, dict):
+            return
+        latest = str(release.get("latest_version", "") or "")
+        staged = self.context.updates.staged_update_info()
+        if staged and str(staged.get("version", "")) == latest:
+            # Уже скачано на прошлом старте — не качаем повторно.
+            return
+        self._update_stage_in_progress = True
+        thread = threading.Thread(target=self._run_silent_update_stage, args=(release,), daemon=True)
+        thread.start()
+
+    def _run_silent_update_stage(self, release: dict[str, str]) -> None:
+        try:
+            prepared = self.context.updates.prepare_update(release)
+            self.context.updates.stage_prepared_update(prepared)
+            self._ui_signals.update_stage_done.emit({"ok": True, "version": str(prepared.get("version", ""))})
+        except Exception as error:
+            # Молчаливый retry: сбой (сеть/сервер) не показываем, повторим на
+            # следующем старте — требование фонового авто-апдейта.
+            self._ui_signals.update_stage_done.emit({"ok": False, "error": str(error)})
+
+    def _on_update_stage_done(self, payload: object) -> None:
+        self._update_stage_in_progress = False
+        if not isinstance(payload, dict):
+            return
+        if payload.get("ok"):
+            self.context.logging.log(
+                "info",
+                "App update staged in background (will install on next launch)",
+                version=str(payload.get("version", "")),
+            )
+            return
+        self.context.logging.log(
+            "warning",
+            "Background update download failed; will retry on next launch",
+            error=str(payload.get("error", "")),
+        )
 
     def _show_next_component_update(self) -> None:
         queue = getattr(self, "_component_update_queue", [])
@@ -12467,6 +12673,11 @@ class MainWindow(QMainWindow):
                 changes["dismissed_app_update_key"] = ""
             if changes:
                 self.context.settings.update(**changes)
+        if status == "available" and not manual and self.context.settings.get().auto_update_enabled:
+            # Фоновый авто-апдейт: тихо скачиваем в staging, без диалогов.
+            # Установка — только на следующем старте (ранний apply-хук в app.py).
+            self._start_silent_update_stage(release)
+            return
         if status == "available" and not manual and self.context.settings.get().apply_update_on_next_launch:
             self._last_prompted_update_version = prompt_key
             self._start_update_apply(None, release)
@@ -13170,13 +13381,40 @@ class MainWindow(QMainWindow):
             self._show_error(self._t("Updates"), self._t("Invalid update package."))
             return
         try:
-            self.context.updates.launch_update(prepared)
+            self._launch_update_with_backup(prepared)
         except Exception as error:
             self._toast_notification("error", self._t("Updates"), str(error))
             self._show_error(self._t("Updates"), str(error))
             return
         self._toast_notification("success", self._t("Updates"), self._t("Update is prepared, restarting the app."))
         self._quit_for_update()
+
+    def _launch_update_with_backup(self, prepared: dict[str, str]) -> None:
+        """Создаёт бэкап текущей версии, пишет фазу installed и запускает апдейтер.
+
+        Бэкап — источник истины для авто-отката, если новая версия не стартует.
+        В dev-режиме бэкап не создаётся (git-репо), фаза пишется без backup_id.
+        """
+        from zapret_zen import __version__ as _cur_version
+        from zapret_zen.services.update_guard import write_update_state
+
+        backup_id = ""
+        try:
+            info = self.context.update_backups.create_update_backup(_cur_version)
+            if info is not None:
+                backup_id = info.id
+                keep = int(getattr(self.context.settings.get(), "update_backup_keep_count", 2))
+                self.context.update_backups.prune(keep)
+        except Exception as backup_error:
+            self.context.logging.log("warning", "Update backup creation failed", error=str(backup_error))
+
+        write_update_state(
+            phase="installed",
+            backup_id=backup_id,
+            version=str(prepared.get("version", "")),
+            attempts=0,
+        )
+        self.context.updates.launch_update(prepared)
 
     def _run_diagnostics_popup(self) -> None:
         results = self.context.diagnostics.run_all()

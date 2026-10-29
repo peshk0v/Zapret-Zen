@@ -21,6 +21,7 @@ from zapret_zen.services.discord_rpc import DiscordRPCService
 from zapret_zen.services.settings import SettingsManager
 from zapret_zen.services import translation as _tr
 from zapret_zen.services.storage import StorageManager
+from zapret_zen.services.update_backups import UpdateBackupManager
 from zapret_zen.services.updates import UpdatesManager
 
 @dataclass(slots=True)
@@ -36,6 +37,7 @@ class ApplicationContext:
     merge: MergeEngine
     diagnostics: DiagnosticsManager
     updates: UpdatesManager
+    update_backups: UpdateBackupManager
     profiles: ProfilesManager
     files: FilesManager
     discord_rpc: DiscordRPCService
@@ -101,6 +103,7 @@ def bootstrap_application() -> ApplicationContext:
     mods = ModsManager(storage, logging, merge, settings, processes=processes)
     diagnostics = DiagnosticsManager(storage, logging, processes, mods, merge)
     updates = UpdatesManager(storage, logging, processes=processes)
+    update_backups = UpdateBackupManager(storage, logging)
     profiles = ProfilesManager(storage)
     files = FilesManager(storage, settings)
     discord_rpc = DiscordRPCService()
@@ -120,6 +123,7 @@ def bootstrap_application() -> ApplicationContext:
         merge=merge,
         diagnostics=diagnostics,
         updates=updates,
+        update_backups=update_backups,
         profiles=profiles,
         files=files,
         discord_rpc=discord_rpc,

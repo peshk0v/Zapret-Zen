@@ -14,7 +14,9 @@ from .models import (
     NotificationEntry,
     ReleaseEntry,
     ThemeDefinition,
+    UpdateBackupInfo,
     UpdateInfo,
+    format_bytes,
 )
 
 __all__ = [
@@ -33,5 +35,7 @@ __all__ = [
     "NotificationEntry",
     "ReleaseEntry",
     "ThemeDefinition",
+    "UpdateBackupInfo",
     "UpdateInfo",
+    "format_bytes",
 ]
