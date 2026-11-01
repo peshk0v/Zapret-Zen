@@ -4583,6 +4583,7 @@ class MainWindow(QMainWindow):
         self._file_tag_render_timer.timeout.connect(self._render_file_tags_chunk)
         self._backend_tasks: dict[str, str] = {}
         self._backend_attached = False
+        self._tg_proxy_connect_dlg: QDialog | None = None
         self._autostart_watchdog = QTimer(self)
         self._autostart_watchdog.setSingleShot(True)
         self._autostart_watchdog.setInterval(120000)
@@ -5403,6 +5404,8 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(3600, self._maybe_run_first_general_autotest)
         QTimer.singleShot(4800, self._check_updates_on_start)
         QTimer.singleShot(5600, self._check_component_updates_background)
+        # tg-ws-proxy включён, Telegram не найден -> окно с копируемой ссылкой (однократно).
+        QTimer.singleShot(6500, self._maybe_show_tg_proxy_connect_dialog)
 
     def _check_component_updates_background(self) -> None:
         if self._launch_hidden:
@@ -6124,6 +6127,100 @@ class MainWindow(QMainWindow):
                 "Telegram Desktop was not found on this PC. Open Components, download Telegram Desktop, and after installation press 'Connect to Telegram'.",
             ),
         )
+
+    def _maybe_show_tg_proxy_connect_dialog(self) -> None:
+        """Однократно при старте: tg-ws-proxy включён, а Telegram не найден.
+
+        Окно даёт ссылку подключения для ручного копирования — детект
+        не знает части клиентов (Unigram, Telegram X, Telegram Web и т.п.).
+        """
+        try:
+            settings = self.context.settings.get()
+            if bool(settings.tg_proxy_link_dialog_shown):
+                return
+            if self._launch_hidden:
+                return
+            if "tg-ws-proxy" not in {str(x) for x in (settings.enabled_component_ids or [])}:
+                return
+            processes = getattr(self.context, "processes", None)
+            if processes is None:
+                return
+            if processes.is_telegram_installed():
+                # Telegram виден — ссылку откроем как раньше, окно не нужно.
+                return
+            links = processes.tg_proxy_connect_links()
+            if not links:
+                return
+        except Exception:
+            return
+        self.context.settings.update(tg_proxy_link_dialog_shown=True)
+        try:
+            self._show_tg_proxy_connect_dialog(links)
+        except Exception:
+            pass
+
+    def _show_tg_proxy_connect_dialog(self, links: list[str]) -> None:
+        from PySide6.QtWidgets import (
+            QDialog,
+            QHBoxLayout,
+            QLineEdit,
+            QPushButton,
+            QVBoxLayout,
+        )
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(self._t("Подключение к Telegram", "Connect to Telegram"))
+        dlg.setMinimumWidth(540)
+        layout = QVBoxLayout(dlg)
+        layout.setSpacing(10)
+
+        info = QLabel(
+            self._t(
+                "Telegram не распознан на этом компьютере, но tg-ws-proxy включён. "
+                "Скопируйте ссылку ниже и откройте её в своём Telegram-клиенте — "
+                "прокси добавится автоматически.",
+                "Telegram was not detected on this PC, but tg-ws-proxy is enabled. "
+                "Copy the link below and open it in your Telegram client — "
+                "the proxy will be added automatically.",
+            )
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        def _copy(row_edit: QLineEdit, btn: QPushButton) -> None:
+            btn.setText(self._t("Скопировано", "Copied"))
+            QTimer.singleShot(1500, lambda: btn.setText(self._t("Копировать", "Copy")))
+
+        for link in links:
+            row = QHBoxLayout()
+            edit = QLineEdit(link)
+            edit.setReadOnly(True)
+            edit.setCursorPosition(0)
+            row.addWidget(edit, 1)
+            btn = QPushButton(self._t("Копировать", "Copy"))
+            btn.clicked.connect(lambda _c=False, e=edit, b=btn: (
+                e.selectAll(),
+                QApplication.clipboard().setText(e.text()),
+                _copy(e, b),
+            ))
+            row.addWidget(btn)
+            layout.addLayout(row)
+
+        close_btn = QPushButton(self._t("Закрыть", "Close"))
+        close_btn.clicked.connect(dlg.accept)
+        layout.addWidget(close_btn)
+
+        # Немодальное окно: не блокирует интерфейс, закрывается крестиком.
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self._tg_proxy_connect_dlg = dlg
+        dlg.finished.connect(lambda _r, d=dlg: self._clear_tg_proxy_connect_dlg(d))
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+    def _clear_tg_proxy_connect_dlg(self, dlg: QDialog) -> None:
+        if self._tg_proxy_connect_dlg is dlg:
+            self._tg_proxy_connect_dlg = None
 
     def _notify_zapret_restart_from_payload(self, payload: object) -> None:
         if not isinstance(payload, dict) or not bool(payload.get("zapret_restarted")):

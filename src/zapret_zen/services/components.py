@@ -270,6 +270,31 @@ class ProcessManager:
             secret=secret,
         )
 
+    def tg_proxy_connect_links(self) -> list[str]:
+        """Ссылки подключения к tg-прокси для ручной настройки клиента.
+
+        tg:// — для Telegram Desktop/Unigram, t.me — для мобильных клиентов.
+        Секрет в ссылках с префиксом 'dd' (MTProto fake-tls).
+        """
+        settings = self.settings.get()
+        secret = (settings.tg_proxy_secret or "").strip().lower()
+        if secret.startswith("dd") and len(secret) > 2:
+            secret = secret[2:]
+        if not secret:
+            secret = secrets.token_hex(16)
+            self.settings.update(tg_proxy_secret=secret)
+        host = str(settings.tg_proxy_host or "").strip()
+        port = int(settings.tg_proxy_port or 443)
+        dd_secret = f"dd{secret}"
+        return [
+            f"tg://proxy?server={host}&port={port}&secret={dd_secret}",
+            f"https://t.me/proxy?server={host}&port={port}&secret={dd_secret}",
+        ]
+
+    def is_telegram_installed(self) -> bool:
+        """True, если найден Telegram Desktop по известным путям."""
+        return any(c.is_file() for c in self._telegram_desktop_candidates())
+
     def consume_telegram_proxy_launch_info(self) -> dict[str, Any] | None:
         info = self._telegram_proxy_launch_info
         self._telegram_proxy_launch_info = None

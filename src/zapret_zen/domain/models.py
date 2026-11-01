@@ -49,6 +49,7 @@ class AppSettings:
     tg_proxy_buf_kb: int = 256
     tg_proxy_pool_size: int = 4
     tg_proxy_link_prompt_signature: str = ""
+    tg_proxy_link_dialog_shown: bool = False
     tg_proxy_media_mode: str = "default"
     tg_proxy_tuning_done: bool = False
     selected_zapret_general: str = ""
