@@ -499,6 +499,20 @@ def _run_inner(argv: list[str] | None = None) -> int:
             buf_kb=known.tg_buf_kb,
             pool_size=known.tg_pool_size,
         )
+
+    # Ранняя валидация запуска после обновления: если предыдущая версия упала
+    # при старте (фаза "launching" без подтверждения "healthy") — спавним внешний
+    # откат и тихо выходим. До admin-elevation/QApplication, чтобы сработать даже
+    # если bootstrap или Qt падают.
+    try:
+        from zapret_zen.services.update_guard import evaluate_startup_update_state
+        _startup_trace("run: update guard evaluating")
+        if evaluate_startup_update_state() == "rollback":
+            _startup_trace("run: update guard triggered rollback, exiting")
+            return 0
+    except Exception as guard_error:
+        _startup_trace(f"run: update guard failed (continuing): {guard_error!r}")
+
     if not known.autostart_launch:
         _startup_trace("run: ensure_admin start")
         elevate_result = _ensure_admin_windows(runtime_argv)
@@ -616,6 +630,18 @@ def _run_inner(argv: list[str] | None = None) -> int:
                 window.show()
             _startup_trace("finish_bootstrap: after window visible call")
 
+            def _confirm_update_launch_healthy() -> None:
+                try:
+                    from zapret_zen.services.update_guard import confirm_launch_healthy
+                    confirm_launch_healthy()
+                    _startup_trace("update guard: launch confirmed healthy")
+                except Exception as confirm_error:
+                    _startup_trace(f"update guard: confirm failed: {confirm_error!r}")
+
+            # Подтверждаем здоровый старт после того, как окно показано и прошёл
+            # короткий grace-period (ловим краши сразу после show).
+            QTimer.singleShot(4000, _confirm_update_launch_healthy)
+
             def _attach_backend_after_show() -> None:
                 _startup_trace("attach_backend: start")
                 bootstrap_tasks = (
@@ -646,6 +672,20 @@ def _run_inner(argv: list[str] | None = None) -> int:
 
             _startup_trace("run: bootstrap main-thread start")
             context = bootstrap_application()
+
+            # Фоновый авто-обновлёр: если на прошлом запуске тихо скачано
+            # обновление — ставим его сейчас (бэкап + фаза installed + внешний
+            # PS: замена каталога и авто-рестарт новой версии). При успехе
+            # приложение молча завершается, не создавая MainWindow.
+            try:
+                from zapret_zen.services.update_auto import apply_pending_staged_update
+                if apply_pending_staged_update(context):
+                    _startup_trace("run: staged update applied, exiting for relaunch")
+                    QTimer.singleShot(500, app.quit)
+                    return
+            except Exception as staged_error:
+                _startup_trace(f"run: staged update apply failed (continuing): {staged_error!r}")
+
             startup_snapshot = build_startup_snapshot(context)
             startup_show_onboarding = _preload_startup_onboarding(
                 context,

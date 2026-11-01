@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Callable
 
 from zapret_zen import __version__
-from zapret_zen.domain import UpdateInfo
+from zapret_zen.domain import AppPaths, UpdateInfo
 from zapret_zen.runtime_env import is_packaged_runtime, packaged_install_root
 from zapret_zen.services.github_network import DownloadCancelledError, GitHubNetworkClient, is_github_rate_limit_error
 from zapret_zen.services.logging_service import LoggingManager
@@ -1057,6 +1057,62 @@ class UpdatesManager:
             cwd=str(install_root),
         )
         self.logging.log("info", "App update launched", target_version=prepared_update.get("version", ""), source=str(extract_root))
+
+    # ── Background staging (silent auto-update) ─────────────────────────────
+    # Фоновая загрузка складывает prepared-пакет в cache/pending_update/ и
+    # устанавливается только на СЛЕДУЮЩЕМ запуске (ранний apply-хук в app.py).
+
+    def _staging_dir(self) -> Path:
+        return self.storage.paths.cache_dir / "pending_update"
+
+    def stage_prepared_update(self, prepared_update: dict[str, str]) -> dict[str, str]:
+        """Перемещает подготовленный пакет из temp в staging до следующего запуска."""
+        staging_root = self._staging_dir()
+        if staging_root.exists():
+            shutil.rmtree(staging_root, ignore_errors=True)
+        staging_root.mkdir(parents=True, exist_ok=True)
+
+        temp_root = Path(prepared_update["temp_root"])
+        extract_root = Path(prepared_update["extract_root"])
+        rel_extract = extract_root.relative_to(temp_root)
+
+        staged_temp = staging_root / "payload"
+        shutil.move(str(temp_root), str(staged_temp))
+        staged_extract = staged_temp / rel_extract
+
+        staged = {
+            "temp_root": str(staged_temp),
+            "extract_root": str(staged_extract),
+            "launch_exe": str(staged_extract / "zapret_zen.exe"),
+            "version": str(prepared_update.get("version", "")),
+        }
+        self.storage.write_json(staging_root / "pending_update.json", staged)
+        self.logging.log("info", "App update staged for next launch", version=staged["version"], staging=str(staged_temp))
+        return staged
+
+    def staged_update_info(self) -> dict[str, str] | None:
+        """Валидирует staged-пакет: метаданные + exe на месте."""
+        info = self.storage.read_json(self._staging_dir() / "pending_update.json", default=None)
+        if not isinstance(info, dict):
+            return None
+        exe = Path(str(info.get("launch_exe", "") or ""))
+        if not exe.is_file():
+            return None
+        return {str(k): str(v) for k, v in info.items()}
+
+    def consume_staged_update(self) -> dict[str, str] | None:
+        """Prepared-пакет для launch_update, если staged валиден; иначе чистит staging."""
+        info = self.staged_update_info()
+        if info is None:
+            self.discard_staged_update()
+            return None
+        return info
+
+    def discard_staged_update(self) -> None:
+        staging_root = self._staging_dir()
+        if staging_root.exists():
+            shutil.rmtree(staging_root, ignore_errors=True)
+            self.logging.log("info", "Staged app update discarded")
 
     def _pick_release_asset(self, assets: list[dict[str, object]]) -> dict[str, object] | None:
         machine = platform.machine().lower()

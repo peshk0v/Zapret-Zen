@@ -116,6 +116,23 @@ class SettingsManager:
             settings.selected_runtime_mode = "zapret"
             changed = True
 
+        # Миграция флага авто-обновки: ранее использовался check_updates_on_start.
+        # При первом запуске с новой моделью переносим значение, дальше
+        # auto_update_enabled — источник истины (он же гейтит silent-download).
+        if "auto_update_enabled" not in raw and "check_updates_on_start" in raw:
+            settings.auto_update_enabled = bool(settings.check_updates_on_start)
+            changed = True
+
+        # Зажим количества сохраняемых бэкапов в допустимый диапазон слайдера.
+        try:
+            keep = int(settings.update_backup_keep_count)
+        except (TypeError, ValueError):
+            keep = 2
+        keep = max(1, min(5, keep))
+        if keep != settings.update_backup_keep_count:
+            settings.update_backup_keep_count = keep
+            changed = True
+
         dc_ip_raw = str(settings.tg_proxy_dc_ip or "").strip()
         dc_ips_present = set()
         for part in dc_ip_raw.replace("\n", ",").split(","):

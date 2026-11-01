@@ -23,6 +23,8 @@ class AppSettings:
     autostart_windows: bool = False
     auto_run_components: bool = False
     check_updates_on_start: bool = True
+    auto_update_enabled: bool = True
+    update_backup_keep_count: int = 2
     update_branch: str = "release"
     notifications_enabled: bool = True
     tray_notifications_enabled: bool = True
@@ -47,6 +49,7 @@ class AppSettings:
     tg_proxy_buf_kb: int = 256
     tg_proxy_pool_size: int = 4
     tg_proxy_link_prompt_signature: str = ""
+    tg_proxy_link_dialog_shown: bool = False
     tg_proxy_media_mode: str = "default"
     tg_proxy_tuning_done: bool = False
     selected_zapret_general: str = ""
@@ -142,6 +145,34 @@ class BackupSnapshot:
     created_at: str
     reason: str
     path: str
+
+
+@dataclass(slots=True)
+class UpdateBackupInfo:
+    """Именованный бэкап установочной директории перед обновлением приложения.
+
+    Живёт в ``backups_dir/update/<id>/``: ``payload/`` — только заменяемые при
+    апдейте файлы (минус preserve-каталоги), ``backup.json`` — метаданные с
+    кэшированным размером, чтобы не гонять обход дерева при каждом открытии UI.
+    """
+
+    id: str
+    version_from: str
+    created_at: str
+    size_bytes: int
+    path: str
+
+
+def format_bytes(num: float) -> str:
+    """Человекочитаемый размер (русская типографика: байт/КБ/МБ/ГБ)."""
+    value = float(num)
+    for unit in ("Б", "КБ", "МБ", "ГБ", "ТБ"):
+        if abs(value) < 1024.0 or unit == "ТБ":
+            if unit == "Б":
+                return f"{int(value)} {unit}"
+            return f"{value:.1f} {unit}".replace(".0 ", " ")
+        value /= 1024.0
+    return f"{value:.1f} ТБ"
 
 
 @dataclass(slots=True)
