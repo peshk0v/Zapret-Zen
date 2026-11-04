@@ -61,6 +61,10 @@ class AppSettings:
     zapret_game_filter_mode: str = "disabled"
     zapret_udp_exclude_ports: str = "51820"
     zapret_block_quic: bool = False
+    warp_protocol: str = "masque"
+    warp_masque_h2_only: bool = True
+    warp_auto_fix_applied: bool = False
+    warp_last_known_good_registration: bool = False
     selected_dns_preset: str = ""
     dns_custom_server: bool = False
     dns_custom_doh: str = ""
@@ -89,6 +93,9 @@ class ComponentState:
     status: str = "stopped"
     pid: int | None = None
     last_error: str = ""
+    # Детальный статус для компонентов с собственными состояниями
+    # (например WARP: Connected / Connecting / Registration missing...).
+    detail: str = ""
 
 
 @dataclass(slots=True)

@@ -42,6 +42,9 @@ def _snapshot(context) -> dict[str, Any]:
             "zapret_ipset_mode": settings.zapret_ipset_mode,
             "zapret_game_filter_mode": settings.zapret_game_filter_mode,
             "zapret_udp_exclude_ports": settings.zapret_udp_exclude_ports,
+            "warp_protocol": str(getattr(settings, "warp_protocol", "masque") or "masque"),
+            "warp_masque_h2_only": bool(getattr(settings, "warp_masque_h2_only", True)),
+            "warp_auto_fix_applied": bool(getattr(settings, "warp_auto_fix_applied", False)),
             "selected_runtime_mode": getattr(settings, "selected_runtime_mode", "zapret"),
             "autostart_windows": bool(settings.autostart_windows),
             "apply_update_on_next_launch": bool(getattr(settings, "apply_update_on_next_launch", False)),
@@ -50,6 +53,7 @@ def _snapshot(context) -> dict[str, Any]:
             "dns_custom_doh": str(getattr(settings, "dns_custom_doh", "") or ""),
         },
         "dns_presets": context.processes.list_dns_presets(),
+        "warp_zapret_validation": dict(getattr(context.processes, "warp_zapret_validation", {}) or {}),
     }
 
 def _mods_payload(context) -> dict[str, Any]:
@@ -293,6 +297,8 @@ def _worker_main(task_queue, result_queue) -> None:
 
 def _action_error_source(action: str) -> str:
     normalized = (action or "").strip().lower()
+    if "warp" in normalized:
+        return "warp"
     if "tg_ws_proxy" in normalized or "tg-ws-proxy" in normalized or "tg_proxy" in normalized or "telegram" in normalized:
         return "tg-ws-proxy"
     if "zapret" in normalized or "general" in normalized or "merge" in normalized:
@@ -387,27 +393,33 @@ def _run_action(context, action: str, payload: dict[str, Any], emit_progress: ca
 @_register_action("toggle_master_runtime")
 def _handle_toggle_master_runtime(context, payload, emit_progress):
     _sync_telegram_component_from_services(context)
-    components = context.processes.list_components()
-    comp_by_id = {c.id: c for c in components}
-    states = {item.component_id: item for item in context.processes.list_states()}
-    active_ids = [c.id for c in components if c.enabled and c.id != "dns-manager"]
-    running_ids = {
-        component_id
-        for component_id, state in states.items()
-        if state.status == "running" and component_id != "dns-manager"
-    }
-    if running_ids:
-        for cid in list(running_ids):
-            if emit_progress:
-                emit_progress({"action": "toggle_master_runtime", "status": f"stop_{cid}"})
-            context.processes.stop_component(cid)
-        mode = "disconnect"
-    else:
-        for cid in active_ids:
-            if emit_progress:
-                emit_progress({"action": "toggle_master_runtime", "status": f"start_{cid}"})
-            context.processes.start_component(cid)
-        mode = "connect"
+    # Bulk-операция: связка WARP↔zapret приостановлена, чтобы zapret
+    # не перезапускался на каждом изменении состояния туннеля.
+    context.processes.set_warp_sync_suspended(True)
+    try:
+        components = context.processes.list_components()
+        comp_by_id = {c.id: c for c in components}
+        states = {item.component_id: item for item in context.processes.list_states()}
+        active_ids = [c.id for c in components if c.enabled and c.id != "dns-manager"]
+        running_ids = {
+            component_id
+            for component_id, state in states.items()
+            if state.status == "running" and component_id != "dns-manager"
+        }
+        if running_ids:
+            for cid in list(running_ids):
+                if emit_progress:
+                    emit_progress({"action": "toggle_master_runtime", "status": f"stop_{cid}"})
+                context.processes.stop_component(cid)
+            mode = "disconnect"
+        else:
+            for cid in active_ids:
+                if emit_progress:
+                    emit_progress({"action": "toggle_master_runtime", "status": f"start_{cid}"})
+                context.processes.start_component(cid)
+            mode = "connect"
+    finally:
+        context.processes.set_warp_sync_suspended(False)
     if emit_progress:
         emit_progress({"action": "toggle_master_runtime", "mode": mode})
     result = {"mode": mode}
@@ -601,6 +613,17 @@ def _handle_apply_settings(context, payload, emit_progress):
     quic_after = bool(effective_payload.get("zapret_block_quic", context.settings.get().zapret_block_quic))
     if quic_before != quic_after:
         context.processes.set_quic_blocked(quic_after)
+    warp_before = (
+        str(getattr(before, "warp_protocol", "masque") or "masque"),
+        bool(getattr(before, "warp_masque_h2_only", True)),
+    )
+    warp_after = (
+        str(getattr(current, "warp_protocol", "masque") or "masque"),
+        bool(getattr(current, "warp_masque_h2_only", True)),
+    )
+    if warp_before != warp_after:
+        # Синхронизируем protocol/h2-only с уже запущенным демоном WARP.
+        context.processes.warp_apply_desired_settings()
     result = {
         "theme_changed": theme_before != context.settings.get().theme,
         "language_changed": language_before != context.settings.get().language,
@@ -699,6 +722,11 @@ def _handle_toggle_component_enabled(context, payload, emit_progress):
             )
             return result
         component = context.processes.toggle_component_enabled(component_id)
+        if component_id == "warp" and component.enabled:
+            # Включение как у zapret: если что-то уже запущено — поднимаем и WARP.
+            _states, any_running, _zapret_running = _runtime_running_states(context)
+            if any_running:
+                context.processes.start_component("warp")
         if component_id == "tg-ws-proxy":
             settings = context.settings.get()
             selected = {str(item) for item in list(settings.selected_service_ids or [])}
@@ -1198,6 +1226,61 @@ def _handle_update_zapret_runtime(context, payload, emit_progress):
 @_register_action("update_tg_ws_proxy_runtime")
 def _handle_update_tg_ws_proxy_runtime(context, payload, emit_progress):
     result = context.processes.update_tg_ws_proxy_runtime()
+    result.update(_snapshot(context))
+    return result
+
+
+@_register_action("update_warp_runtime")
+def _handle_update_warp_runtime(context, payload, emit_progress):
+    def _progress(received: int, total: int, fraction: float | None) -> None:
+        if emit_progress is None:
+            return
+        percent = int(fraction * 100) if fraction else 0
+        emit_progress(
+            {
+                "current": received,
+                "total": total,
+                "percent": percent,
+                "name": "Cloudflare WARP",
+            }
+        )
+
+    result = context.processes.update_warp_runtime(progress_cb=_progress)
+    result.update(_snapshot(context))
+    return result
+
+
+@_register_action("check_warp_update")
+def _handle_check_warp_update(context, payload, emit_progress):
+    return context.processes.warp_check_update()
+
+
+@_register_action("warp_reinstall_registration")
+def _handle_warp_reinstall_registration(context, payload, emit_progress):
+    result = context.processes.warp_reinstall_registration()
+    result.update(_snapshot(context))
+    return result
+
+
+@_register_action("warp_set_protocol")
+def _handle_warp_set_protocol(context, payload, emit_progress):
+    protocol = str((payload or {}).get("protocol", "masque") or "masque")
+    result = context.processes.warp_set_protocol(protocol)
+    result.update(_snapshot(context))
+    return result
+
+
+@_register_action("warp_set_masque_h2_only")
+def _handle_warp_set_masque_h2_only(context, payload, emit_progress):
+    enabled = bool((payload or {}).get("enabled", True))
+    result = context.processes.warp_set_masque_h2_only(enabled)
+    result.update(_snapshot(context))
+    return result
+
+
+@_register_action("warp_uninstall")
+def _handle_warp_uninstall(context, payload, emit_progress):
+    result = context.processes.warp_uninstall()
     result.update(_snapshot(context))
     return result
 

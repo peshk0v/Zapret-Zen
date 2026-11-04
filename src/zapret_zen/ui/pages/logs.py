@@ -95,6 +95,7 @@ class LogsPage(BasePage):
             ("app", "App"),
             ("zapret", "Zapret"),
             ("tg", "TG Proxy"),
+            ("warp", "WARP"),
         ]
         self._source_combo.blockSignals(True)
         self._source_combo.clear()

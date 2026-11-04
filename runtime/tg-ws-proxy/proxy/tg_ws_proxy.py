@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+import random
 import struct
 import asyncio
 import hashlib
@@ -24,7 +25,11 @@ from .stats import stats
 from .config import proxy_config, parse_dc_ip_list, start_cfproxy_domain_refresh, coerce_domain_list
 from .bridge import MsgSplitter, CryptoCtx, do_fallback, bridge_ws_reencrypt, reset_tcp_backoff
 from .raw_websocket import set_sock_opts
-from .fake_tls import proxy_to_masking_domain, verify_client_hello, build_server_hello, FakeTlsStream, TLS_RECORD_HANDSHAKE
+from .fake_tls import (
+    proxy_to_masking_domain, verify_client_hello, parse_client_hello, build_server_hello,
+    probe_appdata_len, set_profiled_appdata_len, FakeTlsStream, TLS_RECORD_HANDSHAKE,
+    SERVER_HELLO_DELAY,
+)
 from .balancer import balancer
 from .pool import ws_pool, cf_worker_pool
 from .cf_h2 import CfH2Pool
@@ -37,6 +42,8 @@ log = logging.getLogger('tg-mtproto-proxy')
 
 LISTENER_CHECK_INTERVAL = 5.0
 LISTENER_RESTART_DELAY = 1.0
+BAD_HANDSHAKE_DRAIN_TIMEOUT = 10.0
+BAD_HANDSHAKE_DRAIN_LIMIT = 64 * 1024
 cf_h2_pool: Optional[CfH2Pool] = None
 
 
@@ -162,7 +169,9 @@ async def _read_client_init(reader, writer, secret, label, masking):
         client_random, session_id, ts = tls_result
         log.debug("[%s] Fake TLS handshake ok (ts=%d)", label, ts)
 
-        server_hello = build_server_hello(secret, client_random, session_id)
+        server_hello = build_server_hello(
+            secret, client_random, session_id, parse_client_hello(client_hello))
+        await asyncio.sleep(random.uniform(*SERVER_HELLO_DELAY))
         writer.write(server_hello)
         await writer.drain()
 
@@ -244,6 +253,15 @@ def _build_crypto_ctx(client_dec_prekey_iv, secret, relay_init):
     return CryptoCtx(clt_decryptor, clt_encryptor, tg_encryptor, tg_decryptor)
 
 
+async def _drain_bad_handshake(reader):
+    remaining = BAD_HANDSHAKE_DRAIN_LIMIT
+    while remaining > 0:
+        chunk = await reader.read(min(4096, remaining))
+        if not chunk:
+            break
+        remaining -= len(chunk)
+
+
 async def _handle_client(reader, writer, secret: bytes):
     stats.connections_total += 1
     stats.connections_active += 1
@@ -265,8 +283,9 @@ async def _handle_client(reader, writer, secret: bytes):
             stats.connections_bad += 1
             log.warning("[%s] bad handshake (wrong secret or proto)", label)
             try:
-                while await clt_reader.read(4096):
-                    pass
+                await asyncio.wait_for(
+                    _drain_bad_handshake(clt_reader),
+                    timeout=BAD_HANDSHAKE_DRAIN_TIMEOUT)
             except Exception:
                 pass
             return
@@ -378,6 +397,19 @@ async def _run(stop_event: Optional[asyncio.Event] = None):
 
     secret_bytes = bytes.fromhex(proxy_config.secret)
     stopping = False
+
+    # Probe before listening so a domain that resolves to this proxy fails
+    # fast instead of answering itself
+    set_profiled_appdata_len(None)
+    if proxy_config.fake_tls_domain:
+        appdata_len = await probe_appdata_len(proxy_config.fake_tls_domain)
+        set_profiled_appdata_len(appdata_len)
+        if appdata_len is None:
+            log.warning("Fake TLS profile unavailable, ServerHello uses "
+                        "random record sizes")
+        else:
+            log.info("Fake TLS profile: first encrypted record %d bytes",
+                     appdata_len)
 
     def client_cb(r, w):
         if stopping:
@@ -675,7 +707,6 @@ def main():
             log_max_mb=args.log_max_mb,
             backups=args.log_backups,
         )
-        fh.setFormatter(log_fmt)
         fh.addFilter(DomainCensorFilter())
         root.addHandler(fh)
 

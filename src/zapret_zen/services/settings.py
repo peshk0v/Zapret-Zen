@@ -112,6 +112,10 @@ class SettingsManager:
             settings.zapret_game_filter_mode = "disabled"
             changed = True
 
+        if raw.get("warp_protocol") not in {"wireguard", "masque"}:
+            settings.warp_protocol = "masque"
+            changed = True
+
         if raw.get("selected_runtime_mode") not in {"zapret"}:
             settings.selected_runtime_mode = "zapret"
             changed = True

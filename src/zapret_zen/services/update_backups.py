@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,6 +15,11 @@ from zapret_zen.services.storage import StorageManager
 # preserve в PS-апдейтере). Бэкапим только replaceable-файлы приложения.
 _PRESERVE_NAMES = ("data", "mods", "configs", "cache", "logs", "backups")
 _PRESERVE_PREFIX = "unins000"
+
+# Скачанные пользователем бинарники компонентов (например runtime/warp от
+# Cloudflare WARP) не поставляются с приложением: не бэкапим, но и не трогаем
+# при восстановлении — после отката они остаются на месте.
+_DYNAMIC_RUNTIME_SUBDIRS = ("warp",)
 
 _UPDATE_BACKUP_SUBDIR = "update"
 _META_FILE = "backup.json"
@@ -88,7 +94,14 @@ class UpdateBackupManager:
             target = destination / entry.name
             try:
                 if entry.is_dir() and not entry.is_symlink():
-                    shutil.copytree(entry, target, dirs_exist_ok=True, symlinks=True)
+                    # Динамический runtime (runtime/warp с бинарниками WARP)
+                    # не бэкапим — он не поставляется с приложением.
+                    ignore = (
+                        shutil.ignore_patterns(*_DYNAMIC_RUNTIME_SUBDIRS)
+                        if entry.name == "runtime"
+                        else None
+                    )
+                    shutil.copytree(entry, target, dirs_exist_ok=True, symlinks=True, ignore=ignore)
                 elif entry.is_file() or entry.is_symlink():
                     shutil.copy2(entry, target)
             except OSError as error:
@@ -258,9 +271,20 @@ class UpdateBackupManager:
             target = install_root / entry.name
             try:
                 if entry.is_dir() and not entry.is_symlink():
+                    # Динамический runtime (runtime/warp) отсутствует в payload —
+                    # сохраняем его через карантин, чтобы откат не удалил бинарники.
+                    warp_quarantine: Path | None = None
+                    if entry.name == "runtime":
+                        warp_dir = target / "warp"
+                        if warp_dir.is_dir():
+                            warp_quarantine = Path(tempfile.mkdtemp(prefix="zz_warp_restore_")) / "warp"
+                            shutil.move(str(warp_dir), str(warp_quarantine))
                     if target.exists():
                         shutil.rmtree(target, ignore_errors=True)
                     shutil.copytree(entry, target, dirs_exist_ok=True, symlinks=True)
+                    if warp_quarantine is not None and warp_quarantine.is_dir():
+                        (target / "warp").parent.mkdir(parents=True, exist_ok=True)
+                        shutil.move(str(warp_quarantine), str(target / "warp"))
                 elif entry.is_file() or entry.is_symlink():
                     target.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(entry, target)

@@ -42,6 +42,8 @@ _VPN_ADAPTER_PATTERNS = (
     "clash",
     "mihomo",
     "tun",
+    "cloudflare",
+    "warp",
 )
 
 
@@ -62,7 +64,7 @@ class VpnDetector:
     def detect_vpn_priority_context(self) -> dict[str, list[str]]:
         script = r"""
 $patterns = @('nekobox','nekoray','v2rayn','xray','xrayw','sing-box','singbox','clash','mihomo','hiddify','outline','wireguard','openvpn','amnezia','warp')
-$adapterPatterns = @('wintun','wireguard','openvpn','tap-','tap_windows','vpn','v2ray','xray','nekobox','nekoray','sing-box','clash','mihomo','tun')
+$adapterPatterns = @('wintun','wireguard','openvpn','tap-','tap_windows','vpn','v2ray','xray','nekobox','nekoray','sing-box','clash','mihomo','tun','cloudflare','warp')
 
 $procById = @{}
 Get-CimInstance Win32_Process | ForEach-Object {

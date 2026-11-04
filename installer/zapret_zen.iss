@@ -96,12 +96,24 @@ Source: "{#X64Src}\mods\*"; DestDir: "{app}\mods"; Flags: ignoreversion recurses
 Source: "{#Arm64Src}\mods\*"; DestDir: "{app}\mods"; Flags: ignoreversion recursesubdirs createallsubdirs onlyifdoesntexist; Check: IsArm64
   #endif
 #endif
-; Everything else is refreshed on update
+; Bundled Cloudflare WARP binaries (runtime/warp): install only when missing,
+; never overwrite a copy the user may have auto-updated to a newer version
 #ifdef X64Src
-Source: "{#X64Src}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "configs\*,mods\*"; Check: IsX64
+  #if DirExists(X64Src + "\runtime\warp")
+Source: "{#X64Src}\runtime\warp\*"; DestDir: "{app}\runtime\warp"; Flags: ignoreversion recursesubdirs createallsubdirs onlyifdoesntexist; Check: IsX64
+  #endif
 #endif
 #ifdef Arm64Src
-Source: "{#Arm64Src}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "configs\*,mods\*"; Check: IsArm64
+  #if DirExists(Arm64Src + "\runtime\warp")
+Source: "{#Arm64Src}\runtime\warp\*"; DestDir: "{app}\runtime\warp"; Flags: ignoreversion recursesubdirs createallsubdirs onlyifdoesntexist; Check: IsArm64
+  #endif
+#endif
+; Everything else is refreshed on update
+#ifdef X64Src
+Source: "{#X64Src}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "configs\*,mods\*,runtime\warp\*"; Check: IsX64
+#endif
+#ifdef Arm64Src
+Source: "{#Arm64Src}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "configs\*,mods\*,runtime\warp\*"; Check: IsArm64
 #endif
 
 [Icons]

@@ -85,6 +85,34 @@ function Is-Preserved([string]$name) {
   return $name.StartsWith('unins000')
 }
 
+# ── WARP: версия из манифеста и выбор победителя ────────────────────────────
+# runtime/warp может прийти и из payload (предустановка WARP с приложением),
+# и от пользователя (он мог обновиться через автообновление компонента).
+# Оставляем более новую версию; неизвестные/нечитаемые версии означают
+# «сохранить пользовательскую» (консервативно, как до предустановки).
+function Get-WarpManifestVersion([string]$dir) {
+  $manifest = Join-Path $dir 'version.json'
+  if (-not (Test-Path -LiteralPath $manifest)) { return '' }
+  try {
+    $data = Get-Content -LiteralPath $manifest -Raw -Encoding UTF8 | ConvertFrom-Json
+    $value = [string]$data.version
+    if ($value) { return $value.Trim() }
+  } catch {}
+  return ''
+}
+
+function Resolve-WarpWinner([string]$stagingDir, [string]$destDir) {
+  # 'payload' — предустановка из payload новее или равна сохранённой;
+  # 'keep-preserved' — оставить пользовательскую копию.
+  $stagedRank = $null
+  $payloadRank = $null
+  $stagedOk = [version]::TryParse((Get-WarpManifestVersion $stagingDir), [ref]$stagedRank)
+  $payloadOk = [version]::TryParse((Get-WarpManifestVersion $destDir), [ref]$payloadRank)
+  if ($stagedOk -and $payloadOk -and ($payloadRank -ge $stagedRank)) { return 'payload' }
+  return 'keep-preserved'
+}
+# ── end WARP helpers ────────────────────────────────────────────────────────
+
 function Clean-Replace([string]$sourceDir, [string]$targetDir) {
   New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
   Get-ChildItem -LiteralPath $targetDir -Force -ErrorAction SilentlyContinue | ForEach-Object {
@@ -126,12 +154,31 @@ if (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue) {
 # "stop"/"delete" с содержимым zapret вместо управления сервисом.
 try { sc.exe stop zapret *> $null } catch {}
 try { sc.exe delete zapret *> $null } catch {}
-foreach ($image in @('zapret_zen.exe', 'TgWsProxy_windows.exe', 'winws.exe')) {
+foreach ($image in @('zapret_zen.exe', 'TgWsProxy_windows.exe', 'winws.exe', 'warp-cli.exe', 'warp-svc.exe')) {
   try { taskkill /F /T /IM $image *> $null } catch {}
 }
 
 New-Item -ItemType Directory -Path $dst -Force | Out-Null
 Add-UpdateLog ('preserved items are kept in place: ' + (($preserve + @('unins000.*')) -join ', '))
+
+# WARP-PRESERVE-START
+# runtime/warp содержит бинарники Cloudflare WARP: предустановленные с
+# приложением и/или обновлённые пользователем. Clean-Replace удаляет runtime
+# целиком, поэтому переносим warp в карантин до полной замены каталога и
+# возвращаем после — с сравнением версий против предустановки из payload.
+$warpStaging = Join-Path $env:TEMP ('zapret_zen_warp_preserve_' + [guid]::NewGuid().ToString('N'))
+$warpSource = Join-Path $dst 'runtime\\warp'
+$warpStaged = $false
+if (Test-Path -LiteralPath $warpSource) {
+  try {
+    Move-Item -LiteralPath $warpSource $warpStaging -Force -ErrorAction Stop
+    $warpStaged = $true
+    Add-UpdateLog ('warp binaries staged for preservation: ' + $warpStaging)
+  } catch {
+    Add-UpdateLog ('warp staging failed (binaries will need reinstall): ' + $_.Exception.Message)
+  }
+}
+# WARP-PRESERVE-END
 
 $sourceIsStandalone = Test-StandalonePayload $src
 if ($sourceIsStandalone) {
@@ -142,6 +189,29 @@ if ($sourceIsStandalone) {
 
 Clean-Replace $src $dst
 Add-UpdateLog 'install directory fully replaced (old runtime files removed, new payload copied)'
+
+# WARP-RESTORE-START
+$warpDest = Join-Path $dst 'runtime\\warp'
+if ($warpStaged) {
+  $warpWinner = 'keep-preserved'
+  if (Test-Path -LiteralPath $warpDest) { $warpWinner = Resolve-WarpWinner $warpStaging $warpDest }
+  if ($warpWinner -eq 'payload') {
+    # Предустановка из payload новее или равна пользовательской — оставляем её.
+    Remove-Item -LiteralPath $warpStaging -Recurse -Force -ErrorAction SilentlyContinue
+    Add-UpdateLog ('warp bundled payload kept (same or newer than preserved): ' + $warpDest)
+  } else {
+    try {
+      if (Test-Path -LiteralPath $warpDest) { [void](Remove-PathRobust $warpDest) }
+      New-Item -ItemType Directory -Path (Split-Path $warpDest -Parent) -Force | Out-Null
+      Move-Item -LiteralPath $warpStaging $warpDest -Force -ErrorAction Stop
+      Add-UpdateLog ('warp binaries restored: ' + $warpDest)
+    } catch {
+      Add-UpdateLog ('warp restore failed (component will offer reinstall): ' + $_.Exception.Message)
+      Remove-Item -LiteralPath $warpStaging -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+# WARP-RESTORE-END
 
 $runtimeRetry = @('_internal')
 $runtimeRetry += @('zapret_zen.exe', 'python3.dll')

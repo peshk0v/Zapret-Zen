@@ -181,6 +181,34 @@ function Test-InstalledStandalone([string]$targetDir) {
          (@(Get-PythonRuntimeDlls $targetDir).Count -gt 0)
 }
 
+# ── WARP: версия из манифеста и выбор победителя ────────────────────────────
+# runtime/warp может прийти и из payload (предустановка WARP с приложением),
+# и от пользователя (он мог обновиться через автообновление компонента).
+# Оставляем более новую версию; неизвестные/нечитаемые версии означают
+# «сохранить пользовательскую» (консервативно, как до предустановки).
+function Get-WarpManifestVersion([string]$dir) {
+  $manifest = Join-Path $dir 'version.json'
+  if (-not (Test-Path -LiteralPath $manifest)) { return '' }
+  try {
+    $data = Get-Content -LiteralPath $manifest -Raw -Encoding UTF8 | ConvertFrom-Json
+    $value = [string]$data.version
+    if ($value) { return $value.Trim() }
+  } catch {}
+  return ''
+}
+
+function Resolve-WarpWinner([string]$stagingDir, [string]$destDir) {
+  # 'payload' — предустановка из payload новее или равна сохранённой;
+  # 'keep-preserved' — оставить пользовательскую копию.
+  $stagedRank = $null
+  $payloadRank = $null
+  $stagedOk = [version]::TryParse((Get-WarpManifestVersion $stagingDir), [ref]$stagedRank)
+  $payloadOk = [version]::TryParse((Get-WarpManifestVersion $destDir), [ref]$payloadRank)
+  if ($stagedOk -and $payloadOk -and ($payloadRank -ge $stagedRank)) { return 'payload' }
+  return 'keep-preserved'
+}
+# ── end WARP helpers ────────────────────────────────────────────────────────
+
 Add-RbLog 'rollback started'
 
 for ($i = 0; $i -lt 40; $i++) {
@@ -194,7 +222,7 @@ if (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue) {
 }
 try { sc.exe stop zapret *> $null } catch {}
 try { sc.exe delete zapret *> $null } catch {}
-foreach ($image in @('zapret_zen.exe', 'TgWsProxy_windows.exe', 'winws.exe')) {
+foreach ($image in @('zapret_zen.exe', 'TgWsProxy_windows.exe', 'winws.exe', 'warp-cli.exe', 'warp-svc.exe')) {
   try { taskkill /F /T /IM $image *> $null } catch {}
 }
 
@@ -204,6 +232,25 @@ if (-not (Test-Path $src)) {
 }
 
 New-Item -ItemType Directory -Path $dst -Force | Out-Null
+
+# WARP-PRESERVE-START
+# Бинарники Cloudflare WARP (runtime/warp) не входят в payload бэкапа —
+# переносим их в карантин, чтобы откат их не удалил; при возврате
+# сравниваем версии с предустановкой из payload (если она там есть).
+$warpStaging = Join-Path $env:TEMP ('zapret_zen_warp_preserve_' + [guid]::NewGuid().ToString('N'))
+$warpSource = Join-Path $dst 'runtime\\warp'
+$warpStaged = $false
+if (Test-Path -LiteralPath $warpSource) {
+  try {
+    Move-Item -LiteralPath $warpSource $warpStaging -Force -ErrorAction Stop
+    $warpStaged = $true
+    Add-RbLog ('warp binaries staged for preservation: ' + $warpStaging)
+  } catch {
+    Add-RbLog ('warp staging failed: ' + $_.Exception.Message)
+  }
+}
+# WARP-PRESERVE-END
+
 # Полная замена: удаляем всё непрезервированное, копируем payload бэкапа.
 Get-ChildItem -LiteralPath $dst -Force -ErrorAction SilentlyContinue | ForEach-Object {
   if (Is-Preserved $_.Name) { return }
@@ -218,6 +265,29 @@ Get-ChildItem -LiteralPath $src -Force -ErrorAction SilentlyContinue | ForEach-O
   } catch { Add-RbLog ('copy failed: ' + $_.FullName + ' | ' + $_.Exception.Message) }
 }
 Add-RbLog 'install directory restored from backup'
+
+# WARP-RESTORE-START
+$warpDest = Join-Path $dst 'runtime\\warp'
+if ($warpStaged) {
+  $warpWinner = 'keep-preserved'
+  if (Test-Path -LiteralPath $warpDest) { $warpWinner = Resolve-WarpWinner $warpStaging $warpDest }
+  if ($warpWinner -eq 'payload') {
+    # Предустановка из payload новее или равна пользовательской — оставляем её.
+    Remove-Item -LiteralPath $warpStaging -Recurse -Force -ErrorAction SilentlyContinue
+    Add-RbLog ('warp bundled payload kept (same or newer than preserved): ' + $warpDest)
+  } else {
+    try {
+      if (Test-Path -LiteralPath $warpDest) { [void](Remove-PathRobust $warpDest) }
+      New-Item -ItemType Directory -Path (Split-Path $warpDest -Parent) -Force | Out-Null
+      Move-Item -LiteralPath $warpStaging $warpDest -Force -ErrorAction Stop
+      Add-RbLog ('warp binaries restored: ' + $warpDest)
+    } catch {
+      Add-RbLog ('warp restore failed: ' + $_.Exception.Message)
+      Remove-Item -LiteralPath $warpStaging -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+# WARP-RESTORE-END
 
 if (-not (Test-InstalledStandalone $dst)) {
   Add-RbLog 'standalone validation failed after restore'

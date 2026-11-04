@@ -4483,6 +4483,7 @@ class MainWindow(QMainWindow):
         self._logs_title_label: QLabel | None = None
         self._logs_refresh_btn: QPushButton | None = None
         self._logs_source_combo: QComboBox | None = None
+        self._warp_zapret_validation_cache: dict = {}
         self._logs_stack: QStackedWidget | None = None
         self._logs_loading_label: QLabel | None = None
         self._current_log_source = "all"
@@ -6235,7 +6236,12 @@ class MainWindow(QMainWindow):
         )
 
     def _component_display_name(self, component_id: str) -> str:
-        return {"zapret": "Zapret", "dns-manager": "DNS Manager", "tg-ws-proxy": "TG WS Proxy"}.get(component_id, component_id)
+        return {
+            "zapret": "Zapret",
+            "dns-manager": "DNS Manager",
+            "tg-ws-proxy": "TG WS Proxy",
+            "warp": "Cloudflare WARP",
+        }.get(component_id, component_id)
 
     def _translate_component_error(self, error: str) -> str:
         text = str(error or "").strip()
@@ -6249,6 +6255,21 @@ class MainWindow(QMainWindow):
             return self._t(
                 "winws не запустился. Запустите приложение от имени администратора и проверьте исключения антивируса для WinDivert.",
                 "winws did not start. Run the app as Administrator and check antivirus exclusions for WinDivert.",
+            )
+        if "administrator rights are required for warp" in lowered:
+            return self._t(
+                "Для Cloudflare WARP нужны права администратора. Запустите приложение от имени администратора.",
+                "Cloudflare WARP requires administrator rights. Run the app as Administrator.",
+            )
+        if "warp binaries are not installed" in lowered:
+            return self._t(
+                "Бинарники Cloudflare WARP не установлены. Нажмите «Установить» на карточке компонента.",
+                "Cloudflare WARP binaries are not installed. Press Install on the component card.",
+            )
+        if "registration is missing" in lowered or "registration missing" in lowered:
+            return self._t(
+                "Регистрация WARP отсутствует. Нажмите «Переустановить регистрацию» на карточке компонента.",
+                "WARP registration is missing. Press Reinstall registration on the component card.",
             )
         if "administrator rights are required" in lowered:
             return self._t(
@@ -8345,6 +8366,7 @@ class MainWindow(QMainWindow):
             "zapret": self._t("Настройки Zapret", "Zapret settings"),
             "dns-manager": self._t("Настройки DNS Manager", "DNS Manager settings"),
             "tg-ws-proxy": self._t("Настройки TG WS Proxy", "TG WS Proxy settings"),
+            "warp": self._t("Настройки Cloudflare WARP", "Cloudflare WARP settings"),
         }
         title_text = settings_titles.get(component_id, display_name)
         title_label = QLabel(title_text)
@@ -8446,6 +8468,46 @@ class MainWindow(QMainWindow):
         ctrl["block_quic"] = quic_cb
         layout.addWidget(quic_cb)
         self._wire_component_settings_widgets(ctrl["ipset_mode"], ctrl["gaming_mode"], udp_excl, quic_cb)
+
+    def _build_warp_card_settings(self, layout: QVBoxLayout, ctrl: dict) -> None:
+        settings = self.context.settings.get()
+        warp_protocol_current = str(
+            self._current_settings_value(ctrl, "warp_protocol", getattr(settings, "warp_protocol", "masque"))
+            or "masque"
+        )
+        layout.addWidget(QLabel(self._t("Протокол туннеля", "Tunnel protocol")))
+        layout.addWidget(
+            self._settings_segment(
+                [
+                    ("MASQUE", "masque"),
+                    ("WireGuard", "wireguard"),
+                ],
+                warp_protocol_current,
+                "warp_protocol",
+                ctrl,
+            )
+        )
+        h2_cb = QCheckBox(self._t("MASQUE h2-only (HTTP/2)", "MASQUE h2-only (HTTP/2)"))
+        h2_cb.setChecked(
+            bool(self._current_settings_value(ctrl, "warp_h2_only", getattr(settings, "warp_masque_h2_only", True)))
+        )
+        ctrl["warp_h2_only"] = h2_cb
+        layout.addWidget(h2_cb)
+        self._wire_component_settings_widgets(ctrl["warp_protocol"], h2_cb)
+
+    def _warp_reinstall_registration(self) -> None:
+        try:
+            self._show_component_update_dialog("Cloudflare WARP")
+            self._submit_backend_task("warp_reinstall_registration")
+        except Exception as error:
+            self._close_component_update_dialog()
+            self._show_error("Cloudflare WARP", str(error))
+
+    def _warp_check_update(self) -> None:
+        try:
+            self._submit_backend_task("check_warp_update")
+        except Exception as error:
+            self._show_error("Cloudflare WARP", str(error))
 
     def _build_tg_card_settings(self, layout: QVBoxLayout, ctrl: dict) -> None:
         settings = self.context.settings.get()
@@ -9082,6 +9144,13 @@ class MainWindow(QMainWindow):
         cb = ctrl.get("block_quic")
         if isinstance(cb, QCheckBox):
             payload["zapret_block_quic"] = cb.isChecked()
+
+        val = _read_seg("warp_protocol")
+        if val in ("masque", "wireguard"):
+            payload["warp_protocol"] = val
+        cb = ctrl.get("warp_h2_only")
+        if isinstance(cb, QCheckBox):
+            payload["warp_masque_h2_only"] = cb.isChecked()
 
         inp = ctrl.get("tg_host")
         if isinstance(inp, QLineEdit):
@@ -10171,6 +10240,10 @@ class MainWindow(QMainWindow):
         self._set_zapret_restart_active(False, task_id=task_id)
         task_gen = self._task_generation.pop(task_id, 0)
         payload = message.get("payload", {})
+        if isinstance(payload, dict) and isinstance(payload.get("warp_zapret_validation"), dict):
+            # Результат быстрой проверки zapret после изменения WARP считается
+            # в backend-worker (другой процесс) и приходит только через снапшот.
+            self._warp_zapret_validation_cache = dict(payload.get("warp_zapret_validation") or {})
         service_response_revision = 0
         settings_response_revision = 0
         if action == "set_selected_services" and isinstance(payload, dict):
@@ -10212,7 +10285,7 @@ class MainWindow(QMainWindow):
             self._notify_component_errors_from_payload(payload)
         self._notify_telegram_proxy_status_from_payload(payload)
         self._notify_zapret_restart_from_payload(payload)
-        if action in {"update_zapret_runtime", "update_tg_ws_proxy_runtime"}:
+        if action in {"update_zapret_runtime", "update_tg_ws_proxy_runtime", "update_warp_runtime", "warp_reinstall_registration", "warp_uninstall"}:
             self._invalidate_general_options_cache()
             self._page_payload_cache.clear()
         elif action in {"toggle_mod", "toggle_component_enabled", "move_mod", "set_mod_emoji", "install_mod", "remove_mod", "import_mod_from_github", "import_mod_from_paths", "import_mod_from_path", "rebuild_merge_runtime", "set_selected_services", "select_runtime_mode"}:
@@ -10455,6 +10528,78 @@ class MainWindow(QMainWindow):
                 self._show_error("TG WS Proxy", message)
             self._mark_dirty("dashboard", "components", "files", "logs")
             return
+        if action == "update_warp_runtime":
+            self._close_component_update_dialog()
+            status = str(payload.get("status", ""))
+            if status == "up-to-date":
+                self._show_info("Cloudflare WARP", self._t("The latest Cloudflare WARP version is already installed."))
+            elif status == "updated":
+                version = str(payload.get("version", "") or "")
+                message = self._t("Cloudflare WARP was updated successfully.")
+                if version:
+                    message = f"{message} ({version})"
+                self._show_info("Cloudflare WARP", message)
+                self._toast_notification("success", "Cloudflare WARP", message)
+            else:
+                message = str(payload.get("error", self._t("Failed to update Cloudflare WARP.")))
+                self._toast_notification("error", "Cloudflare WARP", message)
+                self._show_error("Cloudflare WARP", message)
+            self._mark_dirty("dashboard", "components", "files", "logs")
+            return
+        if action == "check_warp_update":
+            if not isinstance(payload, dict):
+                return
+            latest = str(payload.get("latest_version", "") or "").strip()
+            current = str(payload.get("current_version", "") or "").strip()
+            if not payload.get("installed"):
+                self._show_info(
+                    "Cloudflare WARP",
+                    self._t(
+                        "Cloudflare WARP is not installed yet. Press Install on the component card.",
+                        "Cloudflare WARP is not installed yet. Press Install on the component card.",
+                    ),
+                )
+            elif payload.get("has_update") and latest:
+                self._show_info(
+                    "Cloudflare WARP",
+                    self._t("Доступно обновление", "Update available") + f": {current} → {latest}",
+                )
+            else:
+                self._show_info(
+                    "Cloudflare WARP",
+                    self._t("The latest Cloudflare WARP version is already installed."),
+                )
+            return
+        if action in {"warp_reinstall_registration", "warp_uninstall", "warp_set_protocol", "warp_set_masque_h2_only"}:
+            self._close_component_update_dialog()
+            if not isinstance(payload, dict):
+                return
+            status = str(payload.get("status", ""))
+            if action == "warp_reinstall_registration":
+                if status == "connected":
+                    message = self._t("WARP registration reinstalled, tunnel is connected.")
+                    self._toast_notification("success", "Cloudflare WARP", message)
+                    self._show_info("Cloudflare WARP", message)
+                else:
+                    message = str(
+                        payload.get(
+                            "error",
+                            self._t(
+                                "Не удалось переустановить регистрацию. Проверьте logs/warp.log.",
+                                "Could not reinstall registration. Check logs/warp.log.",
+                            ),
+                        )
+                    )
+                    self._toast_notification("error", "Cloudflare WARP", message)
+                    self._show_error("Cloudflare WARP", message)
+            elif action == "warp_uninstall":
+                if status == "ok":
+                    self._show_info("Cloudflare WARP", self._t("Cloudflare WARP was uninstalled."))
+                else:
+                    message = str(payload.get("error", self._t("Failed to uninstall Cloudflare WARP.")))
+                    self._show_error("Cloudflare WARP", message)
+            self._mark_dirty("dashboard", "components", "files", "logs")
+            return
         if action == "check_component_updates":
             updates = payload.get("updates", {}) if isinstance(payload, dict) else {}
             if not isinstance(updates, dict) or not updates:
@@ -10567,7 +10712,7 @@ class MainWindow(QMainWindow):
             if str(action_id).startswith("mod:"):
                 self._pending_mod_add_ids.discard(str(action_id)[4:])
                 self._mark_dirty("mods")
-        if action in {"update_zapret_runtime", "update_tg_ws_proxy_runtime"}:
+        if action in {"update_zapret_runtime", "update_tg_ws_proxy_runtime", "update_warp_runtime", "warp_reinstall_registration", "warp_uninstall"}:
             self._close_component_update_dialog()
         title = self._backend_error_title(source)
         self._toast_notification("error", title, error)
@@ -10578,6 +10723,8 @@ class MainWindow(QMainWindow):
         if source:
             return source
         normalized = (action or "").strip().lower()
+        if "warp" in normalized:
+            return "warp"
         if "tg_ws_proxy" in normalized or "tg-ws-proxy" in normalized or "tg_proxy" in normalized or "telegram" in normalized:
             return "tg-ws-proxy"
         if "zapret" in normalized or "general" in normalized or "merge" in normalized:
@@ -10598,6 +10745,7 @@ class MainWindow(QMainWindow):
         labels = {
             "tg-ws-proxy": "TG WS Proxy",
             "zapret": "Zapret",
+            "warp": "Cloudflare WARP",
             "mods": self._t("Mods"),
             "settings": self._t("Settings"),
             "files": self._t("Files"),
@@ -10708,6 +10856,22 @@ class MainWindow(QMainWindow):
             status = payload.get("status", "")
             if status:
                 self._update_toggle_status(status)
+        if action == "update_warp_runtime" and isinstance(payload, dict) and self._component_update_label is not None:
+            try:
+                total = int(payload.get("total", 0) or 0)
+                current = int(payload.get("current", 0) or 0)
+                percent = int(payload.get("percent", 0) or 0)
+                if total > 0 and not percent:
+                    percent = int(round(current / total * 100))
+                if percent:
+                    self._component_update_label.setText(
+                        self._t(
+                            f"Скачивание Cloudflare WARP... {percent}%",
+                            f"Downloading Cloudflare WARP... {percent}%",
+                        )
+                    )
+            except Exception:
+                pass
         if action == "run_general_diagnostics" and isinstance(payload, dict):
             self._ui_signals.general_test_progress.emit(
                 {
@@ -14528,6 +14692,20 @@ class MainWindow(QMainWindow):
         status = str(getattr(state, "status", "unknown") or "unknown").lower()
         last_error = str(getattr(state, "last_error", "") or "").strip()
         enabled = bool(getattr(component, "enabled", False))
+        component_id = str(getattr(component, "id", "") or "")
+        detail = str(getattr(state, "detail", "") or "").strip()
+        if component_id == "warp" and detail:
+            # WARP имеет собственные состояния (Connected / Connecting / ...).
+            lowered = detail.lower()
+            if lowered in ("connected",):
+                return detail, "status_ok.svg"
+            if lowered in ("not installed", "registration missing", "error", "unknown"):
+                return detail, "status_warn.svg"
+            if lowered in ("connecting", "reconnecting"):
+                return detail, "status_warn.svg"
+            if lowered in ("disconnected",):
+                return detail, "status_off.svg"
+            return detail, "status_off.svg"
         if status == "running":
             return self._t("Running"), "status_ok.svg"
         if last_error or (enabled and any_running):
@@ -16187,6 +16365,11 @@ class MainWindow(QMainWindow):
             raw_dns = payload.get("dns_presets")
             if isinstance(raw_dns, list):
                 self._dns_presets_cache = [item for item in raw_dns if isinstance(item, dict) and item.get("id")]
+            raw_warp_validation = payload.get("warp_zapret_validation")
+            if isinstance(raw_warp_validation, dict):
+                # Валидация считается в backend-worker (другой процесс) —
+                # приходит только через снапшот.
+                self._warp_zapret_validation_cache = dict(raw_warp_validation)
             raw_components = payload.get("components", [])
             raw_states = payload.get("states", {})
             if isinstance(raw_components, list):
@@ -16227,7 +16410,7 @@ class MainWindow(QMainWindow):
                 self._dns_presets_cache = [item for item in raw if isinstance(item, dict) and item.get("id")]
             except Exception:
                 pass
-        order = {"zapret": 0, "dns-manager": 1, "tg-ws-proxy": 2}
+        order = {"zapret": 0, "warp": 1, "dns-manager": 2, "tg-ws-proxy": 3}
         components = sorted(components, key=lambda item: order.get(item.id, 99))
         self.components_list.clear()
         self._components_card_by_id = {}
@@ -16259,7 +16442,12 @@ class MainWindow(QMainWindow):
             status_text = state.status if state else "stopped"
             subtitle = f"{self._t('Version')}: {component.version} | {self._t('Enabled')}: {self._t('yes') if component.enabled else self._t('no')} | {self._t('Autostart')}: {self._t('yes') if component.autostart else self._t('no')} | {self._t('Status')}: {status_text}"
             source = f"{self._t('Source')}: {component.source}"
-            display_name = {"zapret": "Zapret", "dns-manager": "DNS Manager", "tg-ws-proxy": "Tg-Ws-Proxy"}.get(component.id, component.name)
+            display_name = {
+                "zapret": "Zapret",
+                "dns-manager": "DNS Manager",
+                "tg-ws-proxy": "Tg-Ws-Proxy",
+                "warp": "Cloudflare WARP",
+            }.get(component.id, component.name)
             item = QListWidgetItem(f"{display_name}\n{subtitle}\n{source}")
             item.setData(Qt.ItemDataRole.UserRole, component.id)
             item.setSizeHint(QSize(200, 70))
@@ -16303,6 +16491,10 @@ class MainWindow(QMainWindow):
                 "Локальный Telegram Proxy. Позволяет подключаться к Telegram в обход блокировок, маскируясь под обычный https-трафик.",
                 "Local Telegram Proxy. Lets Telegram connect through restrictions by blending in with regular HTTPS traffic.",
             ),
+            "warp": self._t(
+                "Приватный туннель Cloudflare WARP из папки приложения. Не требует сторонних установок; включается и выключается как Zapret.",
+                "Cloudflare WARP tunnel bundled with the app. No third-party installs required; toggles exactly like Zapret.",
+            ),
         }
         component_cards: list[QFrame] = []
         settings_ctrl: dict = self._components_settings_ctrl() or {}
@@ -16310,7 +16502,12 @@ class MainWindow(QMainWindow):
         for index, component in enumerate(components):
             state = states.get(component.id)
             status_text, _status_icon = self._component_badge_state(component, state, any_running=False)
-            display_name = {"zapret": "Zapret", "dns-manager": "DNS Manager", "tg-ws-proxy": "Tg-Ws-Proxy"}.get(component.id, component.name)
+            display_name = {
+                "zapret": "Zapret",
+                "dns-manager": "DNS Manager",
+                "tg-ws-proxy": "Tg-Ws-Proxy",
+                "warp": "Cloudflare WARP",
+            }.get(component.id, component.name)
             card, card_layout = self._card()
             card.setMinimumWidth(360)
             card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -16323,7 +16520,12 @@ class MainWindow(QMainWindow):
             desc.setWordWrap(True)
             card_layout.addWidget(desc)
 
-            source_author = {"zapret": "Flowseal", "tg-ws-proxy": "Flowseal", "dns-manager": "peshk0v"}.get(
+            source_author = {
+                "zapret": "Flowseal",
+                "tg-ws-proxy": "Flowseal",
+                "dns-manager": "peshk0v",
+                "warp": "Cloudflare",
+            }.get(
                 component.id,
                 component.source.rstrip("/").split("/")[-1] if "/" in component.source else component.source,
             )
@@ -16493,6 +16695,76 @@ class MainWindow(QMainWindow):
                     settings_ctrl["dns_custom"] = custom_dns_cb
                     settings_ctrl["dns_custom_doh"] = custom_doh_input
                     self._wire_component_settings_widgets(dns_combo, custom_dns_cb, custom_doh_input)
+
+            if component.id == "warp":
+                warp_detail = str(getattr(state, "detail", "") or "") if state is not None else ""
+                # Выключенный компонент всегда report'ит Disconnected, поэтому
+                # факт установки проверяем и по файлам (UI видит ФС напрямую).
+                try:
+                    warp_cli_path = self.context.paths.runtime_dir / "warp" / "warp-cli.exe"
+                    warp_files_present = warp_cli_path.is_file()
+                except Exception:
+                    warp_files_present = False
+                not_installed = warp_detail.lower() == "not installed" or not warp_files_present
+
+                warp_status_label = QLabel(
+                    f"{self._t('Status')}: {warp_detail or self._t('Unknown')}"
+                )
+                warp_status_label.setProperty("class", "muted")
+                warp_status_label.setWordWrap(True)
+                card_layout.addWidget(warp_status_label)
+
+                # Сводный статус «zapret + warp».
+                zapret_state = states.get("zapret")
+                zapret_running = bool(zapret_state and zapret_state.status == "running")
+                warp_running = warp_detail.lower() == "connected"
+                if zapret_running or warp_running:
+                    combo_text = f"{self._t('Zapret')}: {self._t('Running') if zapret_running else self._t('Stopped')} | WARP: {warp_detail or self._t('Unknown')}"
+                    combo_label = QLabel(combo_text)
+                    combo_label.setProperty("class", "muted")
+                    combo_label.setWordWrap(True)
+                    card_layout.addWidget(combo_label)
+
+                # Предупреждение при degraded-результате автоподбора + кнопка повтора.
+                validation = dict(getattr(self, "_warp_zapret_validation_cache", {}) or {})
+                if str(validation.get("status", "")) == "degraded":
+                    warn_label = QLabel(
+                        self._t(
+                            "Часть целей недоступна при активном WARP — конфиг zapret может требовать переподбора.",
+                            "Some targets fail while WARP is active — the zapret config may need re-tuning.",
+                        )
+                    )
+                    warn_label.setProperty("class", "muted")
+                    warn_label.setWordWrap(True)
+                    card_layout.addWidget(warn_label)
+                    retune_btn = QPushButton(self._t("Перепрогнать автоподбор", "Re-run auto-tuning"))
+                    retune_btn.clicked.connect(lambda: self._run_general_tests_popup())
+                    self._attach_button_animations(retune_btn)
+                    card_layout.addWidget(retune_btn)
+
+                if not_installed:
+                    install_btn = QPushButton(self._t("Установить", "Install"))
+                    install_btn.setProperty("class", "primary")
+                    install_btn.clicked.connect(lambda: self._update_warp_runtime())
+                    self._attach_button_animations(install_btn)
+                    card_layout.addWidget(install_btn)
+                else:
+                    update_btn = QPushButton(self._t("Обновить", "Update"))
+                    update_btn.clicked.connect(lambda: self._update_warp_runtime())
+                    self._attach_button_animations(update_btn)
+                    card_layout.addWidget(update_btn)
+
+                reinstall_btn = QPushButton(self._t("Переустановить регистрацию", "Reinstall registration"))
+                reinstall_btn.clicked.connect(self._warp_reinstall_registration)
+                self._attach_button_animations(reinstall_btn)
+                card_layout.addWidget(reinstall_btn)
+
+                check_btn = QPushButton(self._t("Проверить обновления", "Check for updates"))
+                check_btn.clicked.connect(self._warp_check_update)
+                self._attach_button_animations(check_btn)
+                card_layout.addWidget(check_btn)
+
+                self._build_warp_card_settings(card_layout, settings_ctrl)
 
             if state is not None and getattr(state, "last_error", ""):
                 error_label = QLabel(str(getattr(state, "last_error", "")))
@@ -16758,6 +17030,16 @@ class MainWindow(QMainWindow):
             self._update_zapret_runtime()
         elif component_id == "tg_ws_proxy":
             self._update_tg_ws_proxy_runtime()
+        elif component_id == "warp":
+            self._update_warp_runtime()
+
+    def _update_warp_runtime(self) -> None:
+        try:
+            self._show_component_update_dialog("Cloudflare WARP")
+            self._submit_backend_task("update_warp_runtime")
+        except Exception as error:
+            self._close_component_update_dialog()
+            self._show_error("Cloudflare WARP", str(error))
 
     def _telegram_release_asset_url(self, release: object, *, want_arm: bool) -> str:
         if not isinstance(release, dict):
@@ -17967,6 +18249,7 @@ class MainWindow(QMainWindow):
             ("app", self._t("App")),
             ("zapret", "Zapret"),
             ("tg-ws-proxy", "TG WS Proxy"),
+            ("warp", "Cloudflare WARP"),
             ("all", self._t("All logs")),
         ]
         current = self._current_log_source

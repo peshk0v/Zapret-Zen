@@ -38,6 +38,8 @@ from zapret_zen.services.github_recovery import GitHubRecovery
 from zapret_zen.services.tg_proxy_manager import TelegramProxyManager
 from zapret_zen.services.runtime_diagnostics import RuntimeDiagnostics
 from zapret_zen.services.runtime_updates import RuntimeUpdateManager
+from zapret_zen.services.warp_manager import WarpManager
+from zapret_zen.services.warp_updates import WarpUpdateManager
 from zapret_zen.services.zapret_runtime import ZapretRuntimeBuilder
 
 _VPN_PROCESS_PATTERNS = (
@@ -219,6 +221,18 @@ class ProcessManager:
             tg_running=self._tg_worker_alive,
             probe_tgws_worker=self.probe_tg_ws_proxy_worker,
         )
+        self.warp = WarpManager(storage, logging, settings)
+        self.warp_updates = WarpUpdateManager(
+            storage, logging, self.github, self.warp,
+            stop_component=self.stop_component,
+            start_component=self.start_component,
+            list_states=self.list_states,
+        )
+        # Результат быстрой проверки конфига zapret при изменении WARP-состояния:
+        # {"status": "ok"|"degraded", "passed": int, "total": int, "at": iso}.
+        self._warp_zapret_validation: dict[str, Any] = {}
+        self._warp_tunnel_active = False
+        self._warp_sync_suspended = False
 
     def _tg_worker_alive(self) -> bool:
         worker = self._processes.get("tg-ws-proxy")
@@ -308,6 +322,7 @@ class ProcessManager:
                     status=state.status,
                     pid=state.pid,
                     last_error=state.last_error,
+                    detail=state.detail,
                 )
                 for state in self._state_cache
             ]
@@ -318,6 +333,7 @@ class ProcessManager:
                 status=state.status,
                 pid=state.pid,
                 last_error=state.last_error,
+                detail=state.detail,
             )
             for state in states
         ]
@@ -346,6 +362,22 @@ class ProcessManager:
                 active = self._dns_manager_is_active()
                 state.status = "running" if active else "stopped"
                 state.pid = None
+            elif component.id == "warp":
+                if not component.enabled:
+                    # Компонент выключен — демон останавливается вместе с ним.
+                    state.status = "stopped"
+                    state.pid = None
+                    if state.detail in ("Connected", "Connecting", "Reconnecting"):
+                        state.detail = "Disconnected"
+                else:
+                    warp_state = self.warp.current_state()
+                    state.status = warp_state.status
+                    state.detail = warp_state.detail
+                    state.pid = None
+                    if warp_state.last_error and state.status == "error":
+                        state.last_error = warp_state.last_error
+                    elif state.status != "error":
+                        state.last_error = ""
             else:
                 process = self._processes.get(component.id)
                 if process and process.poll() is None:
@@ -377,6 +409,10 @@ class ProcessManager:
             return state
         if component.id == "dns-manager":
             state = self._start_dns_manager(component_id)
+            self._invalidate_state_cache()
+            return state
+        if component.id == "warp":
+            state = self._start_warp(component_id)
             self._invalidate_state_cache()
             return state
         current = self._processes.get(component_id)
@@ -450,6 +486,15 @@ class ProcessManager:
             self._invalidate_state_cache()
             return state
 
+        if component_id == "warp":
+            state = self.warp.stop()
+            self._states[component_id] = state
+            self.logging.log("info", "WARP stopped", component_id="warp")
+            self._invalidate_state_cache()
+            # Туннель исчез — правила zapret должны пересчитаться без WARP-контекста.
+            self._on_warp_tunnel_changed(warp_running=False)
+            return state
+
         process = self._processes.get(component_id)
         if process and process.poll() is None:
             process.terminate()
@@ -506,7 +551,11 @@ class ProcessManager:
         return started
 
     def stop_all(self) -> list[ComponentState]:
-        stopped = [self.stop_component(component.id) for component in self.list_components()]
+        self.set_warp_sync_suspended(True)
+        try:
+            stopped = [self.stop_component(component.id) for component in self.list_components()]
+        finally:
+            self.set_warp_sync_suspended(False)
         self._cleanup_merged_runtime()
         return stopped
 
@@ -532,6 +581,89 @@ class ProcessManager:
         self.settings.update(autostart_component_ids=autostart_ids)
         self.logging.log("info", "Component autostart state changed", component_id=component_id, autostart=target.autostart)
         return target
+
+    def _start_warp(self, component_id: str) -> ComponentState:
+        state = self.warp.start()
+        self._states[component_id] = state
+        self.logging.log(
+            "info" if state.status != "error" else "error",
+            "WARP start finished",
+            component_id="warp",
+            status=state.status,
+            detail=state.detail,
+            error=state.last_error,
+        )
+        if state.status == "running":
+            self._on_warp_tunnel_changed(warp_running=True)
+        return state
+
+    def set_warp_sync_suspended(self, suspended: bool) -> None:
+        """Приостанавливает связку WARP↔zapret во время bulk-операций
+        (мастер-кнопка, stop_all), чтобы не перезапускать zapret зря."""
+        self._warp_sync_suspended = bool(suspended)
+
+    def _on_warp_tunnel_changed(self, *, warp_running: bool) -> None:
+        """Реакция на изменение состояния WARP-туннеля.
+
+        - туннель появился при работающем zapret → перезапуск zapret, чтобы
+          `_apply_vpn_priority_to_command` учёл WARP-адаптер/ipset-exclude;
+        - в обоих случаях → быстрая валидация выбранного конфига zapret.
+        """
+        if self._warp_sync_suspended or warp_running == self._warp_tunnel_active:
+            return
+        self._warp_tunnel_active = warp_running
+        if not self._is_image_running("winws.exe"):
+            return
+        try:
+            if warp_running:
+                self.logging.log(
+                    "info",
+                    "Restarting zapret to apply active WARP tunnel context",
+                    component_id="warp",
+                )
+                self.stop_component("zapret")
+                self.start_component("zapret")
+            self._run_warp_zapret_validation()
+        except Exception as error:
+            self.logging.log("warning", "WARP/zapret sync failed", error=str(error))
+
+    def _run_warp_zapret_validation(self) -> None:
+        """Быстрая проверка целей выбранного конфига zapret после смены WARP."""
+        try:
+            targets = self._load_standard_test_targets()[:4]
+            if not targets:
+                return
+            passed = 0
+            with ThreadPoolExecutor(max_workers=min(4, len(targets))) as pool:
+                futures = [pool.submit(self._check_target, target) for target in targets]
+                for future in as_completed(futures, timeout=35):
+                    try:
+                        if future.result() == "ok":
+                            passed += 1
+                    except Exception:
+                        continue
+            total = len(targets)
+            status = "ok" if passed >= total else "degraded"
+            self._warp_zapret_validation = {
+                "status": status,
+                "passed": passed,
+                "total": total,
+                "at": datetime.utcnow().isoformat(),
+            }
+            self.logging.log(
+                "info" if status == "ok" else "warning",
+                "Zapret validation after WARP change",
+                component_id="warp",
+                result=status,
+                passed=passed,
+                total=total,
+            )
+        except Exception as error:
+            self.logging.log("warning", "Zapret validation after WARP change failed", error=str(error))
+
+    @property
+    def warp_zapret_validation(self) -> dict[str, Any]:
+        return dict(self._warp_zapret_validation)
 
     def _start_zapret(self, component_id: str) -> ComponentState:
         # всегда перезапускаем, чтобы не было конфликтов со сторонними процессами
@@ -2524,11 +2656,82 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
     def update_tg_ws_proxy_runtime(self) -> dict[str, str]:
         return self.updates.update_tg_ws_proxy_runtime()
 
+    # ── WARP facades ─────────────────────────────────────────────────────────
+    def update_warp_runtime(self, progress_cb: Callable[..., None] | None = None) -> dict[str, str]:
+        """Установка/обновление бинарников WARP (install при отсутствии)."""
+        return self.warp_updates.update_warp_runtime(progress_cb)
+
+    def warp_check_update(self) -> dict[str, Any]:
+        """Проверка обновления WARP для кнопки «Проверить обновления»."""
+        release = self.warp_updates.fetch_latest_warp_release()
+        latest = str(release.get("latest_version", "") or "").strip()
+        current = self.warp_updates.current_version()
+        has_update = bool(latest and current not in ("", "unknown") and latest != current)
+        return {
+            "has_update": has_update,
+            "latest_version": latest,
+            "current_version": current,
+            "installed": self.warp.is_installed(),
+        }
+
+    def warp_reinstall_registration(self) -> dict[str, Any]:
+        """Ручная переустановка регистрации (та же последовательность, что автофикс)."""
+        if not self.warp.is_installed():
+            return {"status": "error", "error": "WARP binaries are not installed."}
+        if not self.warp.is_admin():
+            return {"status": "error", "error": "Administrator rights are required for WARP."}
+        if not self.warp.ensure_svc_running():
+            return {"status": "error", "error": "WARP service (warp-svc) failed to start."}
+        result = self.warp.auto_fix_sequence(manual=True)
+        self._invalidate_state_cache()
+        if result.get("status") == "connected":
+            self._on_warp_tunnel_changed(warp_running=True)
+        return result
+
+    def warp_set_protocol(self, protocol: str) -> dict[str, Any]:
+        if not self.warp.is_installed():
+            return {"status": "error", "error": "WARP binaries are not installed."}
+        ok = self.warp.set_protocol(str(protocol or ""))
+        self._invalidate_state_cache()
+        return {"status": "ok" if ok else "error", "protocol": str(protocol or "")}
+
+    def warp_set_masque_h2_only(self, enabled: bool) -> dict[str, Any]:
+        if not self.warp.is_installed():
+            return {"status": "error", "error": "WARP binaries are not installed."}
+        ok = self.warp.set_masque_h2_only(bool(enabled))
+        self._invalidate_state_cache()
+        return {"status": "ok" if ok else "error", "h2_only": bool(enabled)}
+
+    def warp_uninstall(self) -> dict[str, Any]:
+        """Удаление компонента WARP (служба из папки приложения + файлы)."""
+        ok = self.warp.uninstall()
+        self._invalidate_state_cache()
+        return {"status": "ok" if ok else "error"}
+
+    def warp_apply_desired_settings(self) -> None:
+        """Синхронизирует protocol/h2-only из настроек с демоном (если запущен)."""
+        try:
+            if self.warp.is_installed() and self.warp.status(fresh=True) not in ("unknown", "error"):
+                self.warp.apply_desired_settings()
+        except Exception as error:
+            self.logging.log("warning", "WARP apply desired settings failed", error=str(error))
+
     def check_component_updates(self) -> dict[str, dict[str, str]]:
         result: dict[str, dict[str, str]] = {}
-        for component_id, fetch_fn, detect_fn in [
-            ("zapret", self.updates.fetch_latest_zapret_release, self.storage._detect_zapret_version),
-            ("tg_ws_proxy", self.updates.fetch_latest_tg_ws_proxy_release, self.storage._detect_tgws_version),
+        for component_id, fetch_fn, detect_fn, component_name in [
+            ("zapret", self.updates.fetch_latest_zapret_release, self.storage._detect_zapret_version, "Zapret"),
+            (
+                "tg_ws_proxy",
+                self.updates.fetch_latest_tg_ws_proxy_release,
+                self.storage._detect_tgws_version,
+                "TG WS Proxy",
+            ),
+            (
+                "warp",
+                self.warp_updates.fetch_latest_warp_release,
+                self.storage._detect_warp_version,
+                "Cloudflare WARP",
+            ),
         ]:
             try:
                 release = fetch_fn()
@@ -2538,7 +2741,7 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
                     result[component_id] = {
                         "latest_version": latest,
                         "current_version": current,
-                        "component_name": "Zapret" if component_id == "zapret" else "TG WS Proxy",
+                        "component_name": component_name,
                     }
             except Exception:
                 continue

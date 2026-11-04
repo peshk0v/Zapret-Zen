@@ -1,4 +1,4 @@
-"""
+r"""
 Screenshot capture script for Zapret-Zen README.
 Takes PNG screenshots of each main page in light and dark themes, with rounded corners.
 Usage: .venv\Scripts\python.exe scripts\take_screenshots.py

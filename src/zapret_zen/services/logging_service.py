@@ -16,6 +16,7 @@ class LoggingManager:
         self.log_path = self.storage.paths.logs_dir / "app.log"
         self.zapret_log_path = self.storage.paths.logs_dir / "zapret.log"
         self.tg_log_path = self.storage.paths.logs_dir / "tg_ws_proxy.log"
+        self.warp_log_path = self.storage.paths.logs_dir / "warp.log"
         self.reset_runtime_logs()
 
     def reset_runtime_logs(self) -> None:
@@ -23,6 +24,7 @@ class LoggingManager:
         for path in (
             self.zapret_log_path,
             self.tg_log_path,
+            self.warp_log_path,
             self.storage.paths.logs_dir / "tg_worker_error.log",
         ):
             try:
@@ -47,6 +49,8 @@ class LoggingManager:
             return str(self.zapret_log_path)
         if source_id == "tg-ws-proxy":
             return str(self.tg_log_path)
+        if source_id == "warp":
+            return str(self.warp_log_path)
         return str(self.log_path)
 
     def log(self, level: str, message: str, **context: Any) -> LogEntry:
@@ -101,6 +105,16 @@ class LoggingManager:
             lines.extend(self._read_plain_log_tail("tg_ws_proxy.log", limit=limit, heading=None))
             lines.extend(self._read_plain_log_tail("tg_worker_error.log", limit=80, heading="tg_worker_error.log"))
             return lines[-limit:] if len(lines) > limit else lines
+        if source_id == "warp":
+            entries = [
+                entry
+                for entry in self.read_entries()
+                if str(entry.context.get("component_id", "") or "") == "warp"
+                or "warp" in entry.message.lower()
+            ]
+            lines = self._format_entries(entries[-limit:])
+            lines.extend(self._read_plain_log_tail("warp.log", limit=limit, heading=None))
+            return lines[-limit:] if len(lines) > limit else lines
         if source_id == "all":
             return self._read_all_source_lines(limit=limit)
         return self._format_entries(self.read_entries()[-limit:])
@@ -117,6 +131,7 @@ class LoggingManager:
             ("zapret", "zapret.log", limit),
             ("tg-ws-proxy", "tg_ws_proxy.log", limit),
             ("tg-ws-proxy", "tg_worker_error.log", 80),
+            ("warp", "warp.log", limit),
         ):
             for stamp, line in self._read_plain_log_tail_records(filename, limit=source_limit):
                 records.append((stamp, ordinal, f"[{source}] {line}"))

@@ -28,7 +28,20 @@ class StorageManager:
         components_file = self.paths.data_dir / "components.json"
         zapret_version = self._detect_zapret_version()
         tg_version = self._detect_tgws_version()
+        warp_version = self._detect_warp_version()
         default_components = [
+            {
+                # WARP первым: при совместном старте туннель поднимается ДО
+                # zapret, чтобы автоподбор/фильтрация учитывали WARP-адаптер.
+                "id": "warp",
+                "name": "Cloudflare WARP",
+                "description": "Приватный туннель Cloudflare WARP из папки приложения.",
+                "version": warp_version,
+                "source": "https://www.cloudflare.com/warp-client/",
+                "command": [],
+                "enabled": False,
+                "autostart": False,
+            },
             {
                 "id": "zapret",
                 "name": "Zapret",
@@ -149,6 +162,17 @@ class StorageManager:
         except Exception:
             return "unknown"
         return "unknown"
+
+    def _detect_warp_version(self) -> str:
+        """Версия бинарников WARP из манифеста runtime/warp/version.json."""
+        manifest = self.paths.runtime_dir / "warp" / "version.json"
+        try:
+            if not manifest.is_file():
+                return "unknown"
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            return str(payload.get("version") or "unknown")
+        except Exception:
+            return "unknown"
 
     def _looks_like_materialized_mod_bundle(self, path: Path) -> bool:
         if not path.exists():

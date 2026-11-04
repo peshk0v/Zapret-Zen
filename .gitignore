@@ -37,6 +37,8 @@ backups/
 configs/
 core/
 default_packs/
+# бинарники Cloudflare WARP кладёт scripts/fetch_warp.py (только для сборки)
+runtime/warp/
 
 # local tools
 *.zip
