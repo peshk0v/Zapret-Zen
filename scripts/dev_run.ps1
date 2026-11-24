@@ -88,6 +88,28 @@ function Wait-AnyKey {
     try { [void]$Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown') } catch {}
 }
 
+# --------------------------------------------------------- экранирование аргов --
+# Windows PowerShell 5.1 склеивает -ArgumentList (массив) через пробел и НЕ
+# расставляет кавычки. Для пути "C:\Users\7ims (admin)\...\.venv" приёмник
+# получает два аргумента, а `python -m venv` объявляет каталоги как nargs='+'
+# и создаёт первый попавшийся: C:\Users\7ims → [WinError 5] Access is denied.
+# Поэтому каждый аргумент кавычуем вручную и передаём Start-Process одну строку.
+function ConvertTo-ProcessArgument([object]$Value) {
+    if ($null -eq $Value) { return '""' }
+    $text = [string]$Value
+    if ($text -notmatch '[\s"]') { return $text }
+    # Правила разбора командной строки Windows: кавычки внутри экранируются,
+    # обратные слэши перед кавычкой и в конце строки удваиваются.
+    $escaped = $text -replace '(\\*)"', '$1$1\"'
+    $escaped = $escaped -replace '(\\+)$', '$1$1'
+    return '"' + $escaped + '"'
+}
+
+function Join-ProcessArguments([string[]]$Values) {
+    if (-not $Values -or $Values.Count -eq 0) { return '' }
+    return (@($Values | ForEach-Object { ConvertTo-ProcessArgument $_ }) -join ' ')
+}
+
 # --------------------------------------------------------- запуск с анимацией --
 # Запускает внешний процесс в фоне, рисует спиннер, возвращает код выхода и логи.
 function Invoke-Animated {
@@ -101,11 +123,19 @@ function Invoke-Animated {
     $errLog = Join-Path $env:TEMP ("zz_dev_err_" + $stamp + '.log')
 
     Write-Host -NoNewline ('  ' + $Label + ' ')
-    $proc = Start-Process -FilePath $FilePath `
-        -ArgumentList $ArgumentList `
-        -WorkingDirectory $Root `
-        -NoNewWindow -PassThru `
-        -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+    # NB: Start-Process сам не кавычит элементы массива — передаём готовую
+    # строку аргументов (см. ConvertTo-ProcessArgument).
+    $argString = Join-ProcessArguments $ArgumentList
+    $procParams = @{
+        FilePath               = $FilePath
+        WorkingDirectory       = $Root
+        NoNewWindow            = $true
+        PassThru               = $true
+        RedirectStandardOutput = $outLog
+        RedirectStandardError  = $errLog
+    }
+    if ($argString) { $procParams.ArgumentList = $argString }
+    $proc = Start-Process @procParams
 
     $i = 0
     while (-not $proc.HasExited) {
@@ -140,6 +170,33 @@ function Remove-AnimatedLogs {
 }
 
 # -------------------------------------------------------------- поиск Python --
+# Проверяет вывод `python -c ...` и возвращает версию "X.Y", если она не старше
+# $MinMajor.$MinMinor, иначе $null.  Общая для PATH- и реестровых кандидатов.
+function ConvertTo-MinPythonVersion([string]$Raw) {
+    if (-not $Raw) { return $null }
+    $Raw = "$Raw".Trim()
+    $parts = $Raw.Split('.')
+    if ($parts.Count -lt 2) { return $null }
+    $major = 0; $minor = 0
+    if (-not [int]::TryParse($parts[0], [ref]$major)) { return $null }
+    if (-not [int]::TryParse($parts[1], [ref]$minor)) { return $null }
+    if ($major -gt $MinMajor -or ($major -eq $MinMajor -and $minor -ge $MinMinor)) {
+        return "$major.$minor"
+    }
+    return $null
+}
+
+# Запускает кандидата и возвращает Path/Version/Label либо $null.
+function Test-PythonCandidate([string]$ExePath, [string[]]$Args, [string]$Label) {
+    try {
+        $probe = @($Args) + @('-c', "import sys; print('%d.%d' % sys.version_info[:2])")
+        $raw = (& $ExePath @probe 2>$null | Select-Object -First 1)
+    } catch { return $null }
+    $version = ConvertTo-MinPythonVersion "$raw"
+    if (-not $version) { return $null }
+    return @{ Path = $ExePath; Version = $version; Label = $Label }
+}
+
 function Find-SystemPython {
     $candidates = New-Object System.Collections.ArrayList
     foreach ($ver in @('3.14', '3.13', '3.12', '3.11')) {
@@ -152,19 +209,27 @@ function Find-SystemPython {
     foreach ($candidate in $candidates) {
         $cmd = Get-Command $candidate.File -ErrorAction SilentlyContinue
         if (-not $cmd) { continue }
-        try {
-            $probe = @($candidate.Args) + @('-c', "import sys; print('%d.%d' % sys.version_info[:2])")
-            $raw = (& $cmd.Source @probe 2>$null | Select-Object -First 1)
-        } catch { continue }
-        if (-not $raw) { continue }
-        $raw = "$raw".Trim()
-        $parts = $raw.Split('.')
-        if ($parts.Count -lt 2) { continue }
-        $major = 0; $minor = 0
-        if (-not [int]::TryParse($parts[0], [ref]$major)) { continue }
-        if (-not [int]::TryParse($parts[1], [ref]$minor)) { continue }
-        if ($major -gt $MinMajor -or ($major -eq $MinMajor -and $minor -ge $MinMinor)) {
-            return @{ Path = $cmd.Source; Version = $raw; Label = $candidate.Label }
+        $found = Test-PythonCandidate $cmd.Source $candidate.Args $candidate.Label
+        if ($found) { return $found }
+    }
+
+    # PATH бывает устаревшим (скрипт запущен из процесса, перенявшего старое
+    # окружение, или лаунчер добавлен в PATH после его чтения).  Тогда Python
+    # реально установлен, но не находится — читаем установку из реестра.
+    foreach ($root in @('HKCU:\SOFTWARE\Python\PythonCore', 'HKLM:\SOFTWARE\Python\PythonCore')) {
+        if (-not (Test-Path -LiteralPath $root)) { continue }
+        # Сортируем по убыванию имени ключа: 3.14 → 3.11, как и в PATH-списке.
+        $versions = Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue |
+            Sort-Object Name -Descending
+        foreach ($versionKey in $versions) {
+            $installKey = Join-Path $versionKey.PSPath 'InstallPath'
+            $install = (Get-ItemProperty -LiteralPath $installKey -ErrorAction SilentlyContinue).'(default)'
+            if (-not $install) { continue }
+            $exe = Join-Path $install 'python.exe'
+            if (-not (Test-Path -LiteralPath $exe)) { continue }
+            $label = 'python ' + $versionKey.PSChildName + ' (реестр)'
+            $found = Test-PythonCandidate $exe @() $label
+            if ($found) { return $found }
         }
     }
     return $null
@@ -266,7 +331,15 @@ function Start-App {
         & $VenvPy @argList
         Write-Dim ('Приложение завершилось с кодом ' + $LASTEXITCODE)
     } else {
-        Start-Process -FilePath $VenvPyw -ArgumentList $argList -WorkingDirectory $Root | Out-Null
+        # Та же проблема кавычек, что и в Invoke-Animated: аргументы приложения
+        # (пути, значения с пробелами) не должны разбиваться при передаче.
+        $argString = Join-ProcessArguments $argList
+        $procParams = @{
+            FilePath         = $VenvPyw
+            WorkingDirectory = $Root
+        }
+        if ($argString) { $procParams.ArgumentList = $argString }
+        Start-Process @procParams | Out-Null
         Write-Ok 'Приложение запущено — удачной разработки!'
     }
 }

@@ -16,6 +16,7 @@ from zapret_zen.services.logging_service import LoggingManager
 from zapret_zen.services.merge import MergeEngine
 from zapret_zen.services.mods import ModsManager
 from zapret_zen.services.notifications import NotificationManager
+from zapret_zen.services.orchestrator_bridge import OrchestratorBridge
 from zapret_zen.services.profiles import ProfilesManager
 from zapret_zen.services.discord_rpc import DiscordRPCService
 from zapret_zen.services.settings import SettingsManager
@@ -42,6 +43,7 @@ class ApplicationContext:
     files: FilesManager
     discord_rpc: DiscordRPCService
     backend: Any | None = None
+    orchestrator: Any | None = None
 
 
 def bootstrap_application() -> ApplicationContext:
@@ -128,6 +130,7 @@ def bootstrap_application() -> ApplicationContext:
         files=files,
         discord_rpc=discord_rpc,
         backend=None,
+        orchestrator=OrchestratorBridge(storage, settings, logging),
     )
 
 

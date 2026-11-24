@@ -5,6 +5,7 @@ import multiprocessing as mp
 import os
 import queue
 import tempfile
+import time
 import traceback
 import uuid
 from collections.abc import Callable
@@ -250,11 +251,42 @@ def _worker_main(task_queue, result_queue) -> None:
 
     context = bootstrap_application()
     try:
+        from zapret_zen.orchestrator.adapters.applier_winws import read_overrides
+        overrides = read_overrides(context.paths.data_dir / "orchestrator" / "overrides.json")
+        lane = overrides.get("probe_lane") if isinstance(overrides, dict) else None
+        if isinstance(lane, (list, tuple)) and len(lane) == 2:
+            context.processes.set_orchestrator_probe_lane((int(lane[0]), int(lane[1])))
+    except Exception:
+        pass
+    try:
         context.processes.ensure_quic_firewall_state()
     except Exception:
         pass
+    last_orchestrator_check = 0.0
     while True:
-        task = task_queue.get()
+        try:
+            task = task_queue.get(timeout=1.0)
+        except queue.Empty:
+            task = None
+        now = time.monotonic()
+        if now - last_orchestrator_check >= 1.0:
+            last_orchestrator_check = now
+            try:
+                bridge = getattr(context, "orchestrator", None)
+                restart = bridge.poll_restart() if bridge is not None else {"needed": False}
+                if restart.get("needed"):
+                    states = {item.component_id: item for item in context.processes.list_states()}
+                    if states.get("zapret") and states["zapret"].status == "running":
+                        context.logging.log("info", "Applying orchestrator rules", sections=restart.get("sections"))
+                        _restart_zapret_if_running(context)
+                    else:
+                        context.processes.rebuild_zapret_runtime_snapshot()
+                    bridge.mark_restart_done()
+            except Exception as error:
+                try:
+                    context.logging.log("warning", "Orchestrator restart check failed", error=str(error))
+                except Exception:
+                    pass
         if not isinstance(task, dict):
             continue
         action = str(task.get("action", ""))
@@ -1286,6 +1318,60 @@ def _handle_set_tg_proxy_tuning_done(context, payload, emit_progress):
 @_register_action("check_component_updates")
 def _handle_check_component_updates(context, payload, emit_progress):
     return {"updates": context.processes.check_component_updates()}
+
+
+@_register_action("orchestrator_snapshot")
+def _handle_orchestrator_snapshot(context, payload, emit_progress):
+    bridge = getattr(context, "orchestrator", None)
+    return bridge.snapshot() if bridge is not None else {"ok": False, "error": "orchestrator unavailable"}
+
+
+@_register_action("orchestrator_connections")
+def _handle_orchestrator_connections(context, payload, emit_progress):
+    bridge = getattr(context, "orchestrator", None)
+    if bridge is None:
+        return {"ok": False, "error": "orchestrator unavailable"}
+    return bridge.connections(int(payload.get("limit", 200)), problematic_only=bool(payload.get("problematic_only", False)))
+
+
+@_register_action("orchestrator_mode")
+def _handle_orchestrator_mode(context, payload, emit_progress):
+    bridge = getattr(context, "orchestrator", None)
+    return bridge.set_mode(str(payload.get("mode", "observe"))) if bridge is not None else {"ok": False, "error": "orchestrator unavailable"}
+
+
+@_register_action("orchestrator_probe")
+def _handle_orchestrator_probe(context, payload, emit_progress):
+    bridge = getattr(context, "orchestrator", None)
+    if bridge is None:
+        return {"ok": False, "error": "orchestrator unavailable"}
+    return bridge.probe(str(payload.get("host", "")), trials=bool(payload.get("trials", True)))
+
+
+@_register_action("orchestrator_forget")
+def _handle_orchestrator_forget(context, payload, emit_progress):
+    bridge = getattr(context, "orchestrator", None)
+    return bridge.forget(str(payload.get("host", ""))) if bridge is not None else {"ok": False, "error": "orchestrator unavailable"}
+
+
+@_register_action("orchestrator_pin")
+def _handle_orchestrator_pin(context, payload, emit_progress):
+    bridge = getattr(context, "orchestrator", None)
+    if bridge is None:
+        return {"ok": False, "error": "orchestrator unavailable"}
+    return bridge.pin(str(payload.get("host", "")), str(payload.get("recipe", "")), str(payload.get("mode", "desync")))
+
+
+@_register_action("orchestrator_apply")
+def _handle_orchestrator_apply(context, payload, emit_progress):
+    bridge = getattr(context, "orchestrator", None)
+    return bridge.apply() if bridge is not None else {"ok": False, "error": "orchestrator unavailable"}
+
+
+@_register_action("orchestrator_policy")
+def _handle_orchestrator_policy(context, payload, emit_progress):
+    bridge = getattr(context, "orchestrator", None)
+    return bridge.update_policy(dict(payload.get("patch", {}) or {})) if bridge is not None else {"ok": False, "error": "orchestrator unavailable"}
 
 
 class BackendWorkerClient(QObject):

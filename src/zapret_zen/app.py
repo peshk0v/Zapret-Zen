@@ -419,6 +419,7 @@ def _run_inner(argv: list[str] | None = None) -> int:
     runtime_argv = list(argv if argv is not None else sys.argv[1:])
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--worker", choices=["tg-ws-proxy"], default="")
+    parser.add_argument("--orchestrator-sidecar", action="store_true")
     parser.add_argument("--autostart-launch", action="store_true")
     parser.add_argument("--skip-autosettings", action="store_true")
     parser.add_argument("--uninstall", action="store_true")
@@ -482,6 +483,11 @@ def _run_inner(argv: list[str] | None = None) -> int:
         _startup_trace(f"run: diagnose-window wrote {target} (code={code})")
         sys.stdout.flush()
         os._exit(code)
+
+    if known.orchestrator_sidecar:
+        _startup_trace("run: worker=orchestrator-sidecar")
+        from zapret_zen.orchestrator.sidecar import main as sidecar_main
+        return sidecar_main(runtime_argv[runtime_argv.index("--orchestrator-sidecar") + 1 :])
 
     if known.worker == "tg-ws-proxy":
         _startup_trace("run: worker=tg-ws-proxy")

@@ -56,6 +56,9 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QSizePolicy,
     QScrollArea,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
     QSlider,
     QStackedLayout,
     QStackedWidget,
@@ -687,6 +690,102 @@ class SpinnerBadge(QWidget):
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         painter.setPen(pen)
         painter.drawArc(rect, int(-self._angle * 16.0), 110 * 16)
+
+
+class OrchestratorPulseWidget(QWidget):
+    """Ambient visual for the orchestrator page.
+
+    The page shows this animation instead of a raw connection feed by default:
+    a calm hub with orbiting nodes, whose motion speeds up with observed
+    activity.  It is intentionally dependency-free and cheap to repaint.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._phase = 0.0
+        self._active = False
+        self._level = 0.0
+        self._accent = QColor("#7380ff")
+        self._light = False
+        self._timer = QTimer(self)
+        self._timer.setInterval(50)
+        self._timer.timeout.connect(self._advance)
+        self.setMinimumSize(190, 168)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+
+    def set_theme(self, light: bool, accent: str = "#7380ff") -> None:
+        self._light = bool(light)
+        try:
+            self._accent = QColor(accent)
+        except Exception:
+            self._accent = QColor("#7380ff")
+        self.update()
+
+    def set_activity(self, active: bool, level: float = 0.0) -> None:
+        self._active = bool(active)
+        try:
+            self._level = max(0.0, min(1.0, float(level)))
+        except (TypeError, ValueError):
+            self._level = 0.0
+        if self._active:
+            if not self._timer.isActive():
+                self._timer.start()
+        else:
+            self._timer.stop()
+        self.update()
+
+    def _advance(self) -> None:
+        speed = 0.018 + 0.05 * self._level
+        self._phase = (self._phase + speed) % 1.0
+        self.update()
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        width = float(self.width())
+        height = float(self.height())
+        cx, cy = width / 2.0, height / 2.0
+        base = max(1.0, min(width, height))
+        accent = QColor(self._accent)
+        muted = QColor("#526480") if not self._light else QColor("#8794ab")
+        painter.setPen(Qt.PenStyle.NoPen)
+        for index in range(3):
+            radius = base * (0.20 + 0.095 * index)
+            radius += math.sin((self._phase + index * 0.33) * math.tau) * base * 0.016
+            wave = 0.5 + 0.5 * math.sin(self._phase * math.tau - index * 1.15)
+            color = QColor(accent)
+            color.setAlpha(int(18 + 78 * wave * (0.6 + 0.4 * self._level)))
+            pen = QPen(color)
+            pen.setWidthF(1.6 if index == 0 else 1.1)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(QPointF(cx, cy), radius, radius)
+        glow = QRadialGradient(QPointF(cx, cy), base * 0.24)
+        inner = QColor(accent)
+        inner.setAlpha(170 if self._active else 80)
+        outer = QColor(accent)
+        outer.setAlpha(0)
+        glow.setColorAt(0.0, inner)
+        glow.setColorAt(1.0, outer)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(glow)
+        painter.drawEllipse(QPointF(cx, cy), base * 0.24, base * 0.24)
+        hub = QColor(accent)
+        hub.setAlpha(235 if self._active else 135)
+        painter.setBrush(hub)
+        painter.drawEllipse(QPointF(cx, cy), base * 0.055, base * 0.055)
+        for index in range(6):
+            direction = 1.0 if index % 2 == 0 else -1.0
+            angle = self._phase * math.tau * direction * (0.35 + 0.12 * (index % 3))
+            angle += index * (math.tau / 6.0)
+            orbit = base * (0.275 + 0.062 * (index % 3))
+            x = cx + math.cos(angle) * orbit
+            y = cy + math.sin(angle) * orbit * 0.82
+            dot = QColor(accent if index % 2 == 0 else muted)
+            dot.setAlpha(215 if self._active else 120)
+            painter.setBrush(dot)
+            size = 3.1 if index % 2 == 0 else 2.2
+            painter.drawEllipse(QPointF(x, y), size, size)
 
 
 class LoadingActionButton(QPushButton):
@@ -4491,6 +4590,29 @@ class MainWindow(QMainWindow):
         self._logs_live_timer = QTimer(self)
         self._logs_live_timer.setInterval(1000)
         self._logs_live_timer.timeout.connect(self._refresh_logs_live)
+        self._orchestrator_page: QWidget | None = None
+        self._orchestrator_pulse: OrchestratorPulseWidget | None = None
+        self._orchestrator_status_label: QLabel | None = None
+        self._orchestrator_detail_label: QLabel | None = None
+        self._orchestrator_mode_group: QButtonGroup | None = None
+        self._orchestrator_mode_buttons: dict[str, QPushButton] = {}
+        self._orchestrator_stat_labels: dict[str, QLabel] = {}
+        self._orchestrator_rules_table: QTableWidget | None = None
+        self._orchestrator_connections_table: QTableWidget | None = None
+        self._orchestrator_feed_card: QFrame | None = None
+        self._orchestrator_feed_btn: QPushButton | None = None
+        self._orchestrator_probe_btn: QPushButton | None = None
+        self._orchestrator_forget_btn: QPushButton | None = None
+        self._orchestrator_pin_btn: QPushButton | None = None
+        self._orchestrator_apply_btn: QPushButton | None = None
+        self._orchestrator_refresh_btn: QPushButton | None = None
+        self._orchestrator_feed_open = False
+        self._orchestrator_refresh_pending = False
+        self._orchestrator_probe_pending = False
+        self._orchestrator_snapshot: dict[str, object] = {}
+        self._orchestrator_refresh_timer = QTimer(self)
+        self._orchestrator_refresh_timer.setInterval(3000)
+        self._orchestrator_refresh_timer.timeout.connect(self._refresh_orchestrator)
         self._tray_show_action: QAction | None = None
         self._tray_quit_action: QAction | None = None
         self._tray_toggle_action: QAction | None = None
@@ -4555,7 +4677,7 @@ class MainWindow(QMainWindow):
         self._general_options_cache: list[dict[str, str]] | None = None
         self._general_options_refresh_in_progress = False
         self._dns_presets_cache: list[dict[str, str]] = []
-        self._refresh_dirty_sections = {"dashboard", "services", "components", "mods", "files", "logs", "tray"}
+        self._refresh_dirty_sections = {"dashboard", "services", "components", "mods", "orchestrator", "files", "logs", "tray"}
         self._refresh_scheduled = False
         self._initial_refresh_pending = False
         self._merge_ensure_in_progress = False
@@ -4676,6 +4798,7 @@ class MainWindow(QMainWindow):
             NavItem("home", "home.svg", self._t("Dashboard")),
             NavItem("services", "services.svg", self._t("Services")),
             NavItem("mods", "components.svg", self._t("Mods")),
+            NavItem("orchestrator", "orchestrator.svg", self._t("Orchestrator")),
             NavItem("settings", "settings.svg", self._t("Settings")),
         ]
 
@@ -5370,6 +5493,8 @@ class MainWindow(QMainWindow):
             elif hasattr(self, "pages") and self.pages.currentIndex() == 2:
                 self._sync_mod_card_layout()
             elif hasattr(self, "pages") and self.pages.currentIndex() == 3:
+                self._refresh_orchestrator(force=True)
+            elif hasattr(self, "pages") and self.pages.currentIndex() == 4:
                 self._sync_settings_components_if_visible()
 
         QTimer.singleShot(0, _sync)
@@ -5387,7 +5512,7 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(250, _refresh_current)
                 return
             current_index = self.pages.currentIndex() if hasattr(self, "pages") else 0
-            section_map = {0: "dashboard", 1: "services", 2: "mods", 3: "settings"}
+            section_map = {0: "dashboard", 1: "services", 2: "mods", 3: "orchestrator", 4: "settings"}
             current = section_map.get(current_index, "dashboard")
             self._mark_dirty(current, "tray")
 
@@ -5487,7 +5612,7 @@ class MainWindow(QMainWindow):
             self.refresh_services()
         elif index == 2:
             self._sync_component_card_layout()
-        elif index == 3:
+        elif index == 4:
             self._sync_settings_components_if_visible()
             self._schedule_files_page_geometry()
 
@@ -5602,7 +5727,7 @@ class MainWindow(QMainWindow):
             self._defer_resize_refresh(self.refresh_services)
         elif hasattr(self, "pages") and self.pages.currentIndex() == 2:
             self._defer_resize_refresh(self._sync_mod_card_layout)
-        elif hasattr(self, "pages") and self.pages.currentIndex() == 3:
+        elif hasattr(self, "pages") and self.pages.currentIndex() == 4:
             self._defer_resize_refresh(self._sync_settings_components_if_visible)
         if self._file_mode_stack is not None:
             if self._file_mode_stack.currentIndex() == 0:
@@ -6459,7 +6584,7 @@ class MainWindow(QMainWindow):
             self.refresh_services()
         elif index == 2:
             self._sync_mod_card_layout()
-        elif index == 3:
+        elif index == 4:
             self._sync_settings_components_if_visible()
 
     def _sync_sidebar_for_width(self) -> None:
@@ -6513,6 +6638,7 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self._build_dashboard_page())
         self.pages.addWidget(self._build_services_page())
         self.pages.addWidget(self._build_mods_page())
+        self.pages.addWidget(self._build_orchestrator_page())
         self.pages.addWidget(self._build_settings_page())
         self._page_blur_effect = None
         pages_host_layout.addWidget(self.pages)
@@ -7519,6 +7645,713 @@ class MainWindow(QMainWindow):
         self.mods_cards_layout = self._mods_page.cards_layout
         return self._mods_page
 
+    def _build_orchestrator_page(self) -> QWidget:
+        page = QWidget()
+        page.setObjectName("OrchestratorPage")
+        page.setProperty("class", "pageRoot")
+        page.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        root = QVBoxLayout(page)
+        root.setContentsMargins(0, 0, 0, 12)
+        root.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("OrchestratorScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setProperty("class", "pageCanvas")
+        host = QWidget()
+        host.setProperty("class", "pageCanvas")
+        canvas = QVBoxLayout(host)
+        canvas.setContentsMargins(12, 4, 12, 12)
+        canvas.setSpacing(10)
+        canvas.setAlignment(Qt.AlignmentFlag.AlignTop)
+        scroll.setWidget(host)
+        root.addWidget(scroll, 1)
+        self._orchestrator_page = page
+
+        header, header_layout = self._card()
+        header_layout.setContentsMargins(16, 14, 16, 14)
+        header_layout.setSpacing(6)
+        title = QLabel(self._t("Умный оркестратор", "Smart orchestrator"))
+        title.setProperty("class", "title")
+        header_layout.addWidget(title)
+        subtitle = QLabel(
+            self._t(
+                "Следит за доменами, которые вы реально открываете, проверяет блокировки и подбирает обход. "
+                "В автоматическом режиме вам достаточно нажать кнопку питания на главной.",
+                "Watches the domains you actually open, verifies blocking and picks a bypass. "
+                "In automatic mode pressing the power button on the dashboard is all you need.",
+            )
+        )
+        subtitle.setWordWrap(True)
+        subtitle.setProperty("class", "muted")
+        header_layout.addWidget(subtitle)
+
+        mode_row = QHBoxLayout()
+        mode_row.setContentsMargins(0, 6, 0, 0)
+        mode_row.setSpacing(6)
+        mode_label = QLabel(self._t("Режим", "Mode"))
+        mode_label.setProperty("class", "muted")
+        mode_row.addWidget(mode_label)
+        self._orchestrator_mode_group = QButtonGroup(header)
+        self._orchestrator_mode_group.setExclusive(True)
+        modes = (
+            ("observe", self._t("Наблюдение", "Observe")),
+            ("suggest", self._t("Предлагать", "Suggest")),
+            ("auto", self._t("Авто", "Auto")),
+        )
+        for mode, label in modes:
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setFixedHeight(30)
+            btn.setProperty("class", "settingsSegment")
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setChecked(mode == "observe")
+            btn.clicked.connect(lambda _checked=False, value=mode: self._set_orchestrator_mode(value))
+            self._orchestrator_mode_group.addButton(btn)
+            self._orchestrator_mode_buttons[mode] = btn
+            mode_row.addWidget(btn)
+        mode_row.addStretch(1)
+        header_layout.addLayout(mode_row)
+        canvas.addWidget(header)
+
+        hero, hero_layout = self._card()
+        hero_layout.setContentsMargins(16, 14, 16, 14)
+        hero_layout.setSpacing(8)
+        hero_row = QHBoxLayout()
+        hero_row.setContentsMargins(0, 0, 0, 0)
+        hero_row.setSpacing(16)
+
+        self._orchestrator_pulse = OrchestratorPulseWidget(hero)
+        self._orchestrator_pulse.setMinimumHeight(176)
+        hero_row.addWidget(self._orchestrator_pulse, 1)
+
+        summary = QVBoxLayout()
+        summary.setContentsMargins(0, 0, 0, 0)
+        summary.setSpacing(4)
+        status = QLabel(self._t("Оркестратор запускается…", "Orchestrator is starting…"))
+        status.setProperty("class", "cardTitle")
+        status.setWordWrap(True)
+        self._orchestrator_status_label = status
+        summary.addWidget(status)
+        detail = QLabel(
+            self._t(
+                "Данные появятся после первого цикла наблюдения.",
+                "Data will appear after the first observation cycle.",
+            )
+        )
+        detail.setWordWrap(True)
+        detail.setProperty("class", "muted")
+        self._orchestrator_detail_label = detail
+        summary.addWidget(detail)
+
+        stats_grid = QGridLayout()
+        stats_grid.setContentsMargins(0, 6, 0, 0)
+        stats_grid.setHorizontalSpacing(18)
+        stats_grid.setVerticalSpacing(2)
+        for column, (key, caption) in enumerate(
+            (
+                ("hosts", self._t("Домены", "Domains")),
+                ("rules", self._t("Правила", "Rules")),
+                ("probes", self._t("Проверки", "Probes")),
+                ("healed", self._t("Вылечено", "Healed")),
+            )
+        ):
+            caption_label = QLabel(caption)
+            caption_label.setProperty("class", "muted")
+            value_label = QLabel("—")
+            self._orchestrator_stat_labels[key] = value_label
+            stats_grid.addWidget(caption_label, 0, column)
+            stats_grid.addWidget(value_label, 1, column)
+        summary.addLayout(stats_grid)
+
+        feed_btn = QPushButton(self._t("Открыть ленту соединений", "Open connection feed"))
+        feed_btn.setCheckable(True)
+        feed_btn.setFixedHeight(32)
+        feed_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        feed_btn.clicked.connect(self._toggle_orchestrator_feed)
+        self._orchestrator_feed_btn = feed_btn
+        summary.addWidget(feed_btn, 0, Qt.AlignmentFlag.AlignLeft)
+        summary.addStretch(1)
+        hero_row.addLayout(summary, 1)
+        hero_layout.addLayout(hero_row)
+        canvas.addWidget(hero)
+
+        rules_card, rules_layout = self._card()
+        rules_layout.setContentsMargins(16, 14, 16, 14)
+        rules_layout.setSpacing(8)
+        rules_header = QHBoxLayout()
+        rules_header.setContentsMargins(0, 0, 0, 0)
+        rules_title = QLabel(self._t("Домены и стратегии", "Domains and strategies"))
+        rules_title.setProperty("class", "cardTitle")
+        rules_header.addWidget(rules_title)
+        rules_header.addStretch(1)
+        refresh_btn = QPushButton(self._t("Обновить", "Refresh"))
+        refresh_btn.setFixedHeight(28)
+        refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        refresh_btn.clicked.connect(lambda: self._refresh_orchestrator(force=True))
+        self._orchestrator_refresh_btn = refresh_btn
+        rules_header.addWidget(refresh_btn)
+        rules_layout.addLayout(rules_header)
+
+        rules_hint = QLabel(
+            self._t(
+                "В наблюдении оркестратор только собирает статистику; в «Предлагать» он готовит правило, "
+                "а в «Авто» применяет его к winws без вашего участия.",
+                "In observe mode the orchestrator only collects statistics; in Suggest it prepares a rule, "
+                "and in Auto it applies it to winws without your involvement.",
+            )
+        )
+        rules_hint.setWordWrap(True)
+        rules_hint.setProperty("class", "muted")
+        rules_layout.addWidget(rules_hint)
+
+        table = QTableWidget(0, 6)
+        table.setHorizontalHeaderLabels(
+            [
+                self._t("Домен", "Domain"),
+                self._t("Вердикт", "Verdict"),
+                self._t("Стратегия", "Strategy"),
+                self._t("QUIC", "QUIC"),
+                self._t("Режим", "Mode"),
+                self._t("Обновлено", "Updated"),
+            ]
+        )
+        table.verticalHeader().setVisible(False)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setAlternatingRowColors(True)
+        table.setShowGrid(False)
+        table.setMinimumHeight(190)
+        header_view = table.horizontalHeader()
+        header_view.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for column in range(1, 6):
+            header_view.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        self._orchestrator_rules_table = table
+        rules_layout.addWidget(table)
+
+        actions_row = QHBoxLayout()
+        actions_row.setContentsMargins(0, 0, 0, 0)
+        actions_row.setSpacing(8)
+        probe_btn = QPushButton(self._t("Проверить домен", "Probe domain"))
+        probe_btn.setFixedHeight(30)
+        probe_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        probe_btn.clicked.connect(self._probe_selected_orchestrator_host)
+        self._orchestrator_probe_btn = probe_btn
+        actions_row.addWidget(probe_btn)
+        forget_btn = QPushButton(self._t("Забыть", "Forget"))
+        forget_btn.setFixedHeight(30)
+        forget_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        forget_btn.clicked.connect(self._forget_selected_orchestrator_host)
+        self._orchestrator_forget_btn = forget_btn
+        actions_row.addWidget(forget_btn)
+        pin_btn = QPushButton(self._t("Закрепить", "Pin"))
+        pin_btn.setFixedHeight(30)
+        pin_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        pin_btn.clicked.connect(self._pin_selected_orchestrator_host)
+        self._orchestrator_pin_btn = pin_btn
+        actions_row.addWidget(pin_btn)
+        apply_btn = QPushButton(self._t("Применить правила", "Apply rules"))
+        apply_btn.setFixedHeight(30)
+        apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        apply_btn.clicked.connect(self._apply_orchestrator_rules)
+        self._orchestrator_apply_btn = apply_btn
+        actions_row.addWidget(apply_btn)
+        actions_row.addStretch(1)
+        rules_layout.addLayout(actions_row)
+        canvas.addWidget(rules_card)
+
+        feed_card, feed_layout = self._card()
+        feed_layout.setContentsMargins(16, 14, 16, 14)
+        feed_layout.setSpacing(8)
+        feed_title = QLabel(self._t("Лента соединений", "Connection feed"))
+        feed_title.setProperty("class", "cardTitle")
+        feed_layout.addWidget(feed_title)
+        feed_hint = QLabel(
+            self._t(
+                "Сырые соединения живут только в памяти сайдкара и никогда не пишутся в базу.",
+                "Raw connections live only in the sidecar memory and are never written to the database.",
+            )
+        )
+        feed_hint.setWordWrap(True)
+        feed_hint.setProperty("class", "muted")
+        feed_layout.addWidget(feed_hint)
+        connections = QTableWidget(0, 5)
+        connections.setHorizontalHeaderLabels(
+            [
+                self._t("Время", "Time"),
+                self._t("Процесс", "Process"),
+                self._t("Домен", "Domain"),
+                self._t("Удалённый адрес", "Remote"),
+                self._t("Вердикт", "Verdict"),
+            ]
+        )
+        connections.verticalHeader().setVisible(False)
+        connections.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        connections.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        connections.setAlternatingRowColors(True)
+        connections.setShowGrid(False)
+        connections.setMinimumHeight(220)
+        connections_header = connections.horizontalHeader()
+        connections_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        for column in (0, 1, 3, 4):
+            connections_header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        self._orchestrator_connections_table = connections
+        feed_layout.addWidget(connections)
+        feed_card.hide()
+        self._orchestrator_feed_card = feed_card
+        canvas.addWidget(feed_card)
+
+        self._apply_orchestrator_theme()
+        return page
+
+    def _apply_orchestrator_theme(self) -> None:
+        if self._orchestrator_pulse is None:
+            return
+        settings = self.context.settings.get()
+        self._orchestrator_pulse.set_theme(self._light_theme, getattr(settings, "accent_color", "#7380ff"))
+
+    def _orchestrator_page_active(self) -> bool:
+        return hasattr(self, "pages") and self.pages.currentIndex() == 3
+
+    def _set_orchestrator_mode(self, mode: str) -> None:
+        mode = str(mode or "").strip().lower()
+        if mode not in {"observe", "suggest", "auto"}:
+            return
+        button = self._orchestrator_mode_buttons.get(mode)
+        if button is not None:
+            button.setChecked(True)
+        if self._orchestrator_status_label is not None:
+            self._orchestrator_status_label.setText(self._t("Переключаю режим…", "Switching mode…"))
+        if self.context.backend is None:
+            return
+        try:
+            self._submit_backend_task("orchestrator_mode", {"mode": mode}, action_id="__orch_mode__")
+        except Exception as error:
+            self.context.logging.log("warning", "orchestrator_mode_failed", error=str(error))
+
+    def _refresh_orchestrator(self, *, force: bool = False) -> None:
+        if not force and not self._orchestrator_page_active():
+            return
+        if self._orchestrator_refresh_pending or self.context.backend is None:
+            return
+        self._orchestrator_refresh_pending = True
+        try:
+            self._submit_backend_task("orchestrator_snapshot", action_id="__orch_snapshot__")
+            if self._orchestrator_feed_open:
+                self._submit_backend_task(
+                    "orchestrator_connections",
+                    {"limit": 150, "problematic_only": False},
+                    action_id="__orch_connections__",
+                )
+        except Exception as error:
+            self._orchestrator_refresh_pending = False
+            self.context.logging.log("warning", "orchestrator_refresh_failed", error=str(error))
+
+    def _start_orchestrator_refresh(self) -> None:
+        self._refresh_orchestrator(force=True)
+        if not self._orchestrator_refresh_timer.isActive():
+            self._orchestrator_refresh_timer.start()
+
+    def _stop_orchestrator_refresh(self) -> None:
+        self._orchestrator_refresh_timer.stop()
+
+    def _toggle_orchestrator_feed(self, checked: bool = False) -> None:
+        self._orchestrator_feed_open = bool(checked)
+        if self._orchestrator_feed_card is not None:
+            self._orchestrator_feed_card.setVisible(self._orchestrator_feed_open)
+        if self._orchestrator_feed_btn is not None:
+            self._orchestrator_feed_btn.setText(
+                self._t("Свернуть ленту", "Hide feed")
+                if self._orchestrator_feed_open
+                else self._t("Открыть ленту соединений", "Open connection feed")
+            )
+        if self._orchestrator_feed_open:
+            self._refresh_orchestrator(force=True)
+
+    def _verdict_title(self, verdict: str) -> str:
+        return {
+            "ok": self._t("работает", "healthy"),
+            "suspect": self._t("подозрение", "suspect"),
+            "blocked": self._t("заблокирован", "blocked"),
+            "routed": self._t("через прокси", "routed"),
+            "unmatchable": self._t("не подходит", "unmatchable"),
+            "unknown": self._t("неизвестно", "unknown"),
+        }.get(str(verdict or "unknown"), str(verdict or "unknown"))
+
+    def _quic_rule_title(self, recipe: str) -> str:
+        """Human title for the QUIC half of a rule.
+
+        An empty value means the host gets no UDP/443 profile at all, which is a
+        real state (QUIC disabled, or a ``direct`` rule) and must not look like
+        a missing measurement.
+        """
+        recipe = str(recipe or "").strip()
+        if not recipe:
+            return "—"
+        return {
+            "quic-fake2": self._t("fake ×2", "fake ×2"),
+            "quic-fake4": self._t("fake ×4", "fake ×4"),
+            "quic-fake6": self._t("fake ×6", "fake ×6"),
+        }.get(recipe, recipe)
+
+    def _format_orchestrator_ts(self, value: object) -> str:
+        try:
+            number = float(value or 0.0)
+        except (TypeError, ValueError):
+            return "—"
+        if number <= 0:
+            return "—"
+        try:
+            return datetime.fromtimestamp(number).strftime("%H:%M:%S")
+        except (OverflowError, OSError, ValueError):
+            return "—"
+
+    def _apply_orchestrator_snapshot(self, payload: dict) -> None:
+        self._orchestrator_refresh_pending = False
+        if not isinstance(payload, dict):
+            return
+        self._orchestrator_snapshot = payload
+        ok = bool(payload.get("ok", False))
+        error = str(payload.get("error") or "").strip()
+        mode = str(payload.get("mode") or "observe").strip().lower()
+        counters = payload.get("counters") if isinstance(payload.get("counters"), dict) else {}
+        observer = payload.get("observer") if isinstance(payload.get("observer"), dict) else {}
+        applier = payload.get("applier") if isinstance(payload.get("applier"), dict) else {}
+        started = bool(payload.get("started"))
+        available = bool(observer.get("available", True))
+        live = int(observer.get("live", 0) or 0)
+        pending_restart = bool(applier.get("pending_restart"))
+
+        button = self._orchestrator_mode_buttons.get(mode)
+        if button is not None and not button.isChecked():
+            button.blockSignals(True)
+            button.setChecked(True)
+            button.blockSignals(False)
+
+        for key in ("hosts", "rules", "probes", "healed"):
+            label = self._orchestrator_stat_labels.get(key)
+            if label is not None:
+                label.setText(str(int(counters.get(key, 0) or 0)))
+
+        if self._orchestrator_status_label is not None:
+            if not ok:
+                status = self._t("Оркестратор недоступен", "Orchestrator is unavailable")
+            elif not started:
+                status = self._t("Оркестратор запускается…", "Orchestrator is starting…")
+            elif not available:
+                status = self._t("Ограниченный режим наблюдения", "Limited observation mode")
+            elif mode == "off":
+                status = self._t("Выключен", "Off")
+            elif mode == "observe":
+                status = self._t("Наблюдение", "Observing")
+            elif mode == "suggest":
+                status = self._t("Готовит предложения", "Preparing suggestions")
+            else:
+                status = self._t("Автоматический обход включён", "Automatic bypass is on")
+            self._orchestrator_status_label.setText(status)
+        if self._orchestrator_detail_label is not None:
+            network = str(payload.get("network") or "").strip()
+            if not ok:
+                detail = error or self._t(
+                    "Сайдкар не отвечает. Проверьте журнал приложения.",
+                    "The sidecar is not responding. Check the application log.",
+                )
+            elif not started:
+                detail = self._t(
+                    "Первый цикл наблюдения ещё не завершён.",
+                    "The first observation cycle has not finished yet.",
+                )
+            elif not available:
+                detail = str(observer.get("detail") or "").strip() or self._t(
+                    "Нет доступа к таблице соединений; автолечение отключено.",
+                    "No access to the connection table; auto-healing is disabled.",
+                )
+            else:
+                parts = []
+                if network:
+                    parts.append(self._t("Сеть {network}", "Network {network}").format(network=network))
+                parts.append(self._t("В памяти соединений: {count}", "Connections in memory: {count}").format(count=live))
+                if pending_restart:
+                    parts.append(self._t("Правила ждут перезапуска winws", "Rules are waiting for a winws restart"))
+                detail = " · ".join(parts)
+            self._orchestrator_detail_label.setText(detail)
+
+        if self._orchestrator_pulse is not None:
+            activity = ok and started and available and mode != "off"
+            level = min(1.0, live / 24.0 + (0.25 if pending_restart else 0.0))
+            self._orchestrator_pulse.set_activity(activity, level)
+
+        self._fill_orchestrator_rules(payload)
+
+    def _fill_orchestrator_rules(self, payload: dict) -> None:
+        table = self._orchestrator_rules_table
+        if table is None:
+            return
+        rule_items = payload.get("rules") if isinstance(payload.get("rules"), list) else []
+        stat_items = payload.get("stats") if isinstance(payload.get("stats"), list) else []
+        stats_by_host: dict[str, dict] = {}
+        for item in stat_items:
+            if isinstance(item, dict) and str(item.get("host") or "").strip():
+                stats_by_host[str(item.get("host")).strip()] = item
+        rows: list[tuple[str, str, str, str, str, float, bool]] = []
+        seen: set[str] = set()
+        for item in rule_items:
+            if not isinstance(item, dict):
+                continue
+            host = str(item.get("host") or "").strip()
+            if not host or host in seen:
+                continue
+            seen.add(host)
+            stats = stats_by_host.get(host) or {}
+            updated = item.get("last_ok") or item.get("created_at") or stats.get("last_seen") or 0.0
+            try:
+                updated_value = float(updated)
+            except (TypeError, ValueError):
+                updated_value = 0.0
+            rows.append(
+                (
+                    host,
+                    str(stats.get("verdict") or ("ok" if item.get("last_ok") else "unknown")),
+                    str(item.get("recipe") or stats.get("recipe") or "—"),
+                    self._quic_rule_title(str(item.get("quic_recipe") or "")),
+                    str(item.get("mode") or "—"),
+                    updated_value,
+                    bool(item.get("pinned")),
+                )
+            )
+        for host, item in stats_by_host.items():
+            if host in seen:
+                continue
+            try:
+                updated_value = float(item.get("last_seen") or 0.0)
+            except (TypeError, ValueError):
+                updated_value = 0.0
+            rows.append(
+                (
+                    host,
+                    str(item.get("verdict") or "unknown"),
+                    str(item.get("recipe") or "—"),
+                    "—",
+                    "—",
+                    updated_value,
+                    False,
+                )
+            )
+        rows.sort(key=lambda row: row[5], reverse=True)
+        rows = rows[:80]
+
+        table.setSortingEnabled(False)
+        table.setRowCount(len(rows))
+        for row_index, (host, verdict, recipe, quic, mode, updated, pinned) in enumerate(rows):
+            values = (
+                f"{host} {self._t('(закреплено)', '(pinned)')}" if pinned else host,
+                self._verdict_title(verdict),
+                recipe,
+                quic,
+                mode,
+                self._format_orchestrator_ts(updated),
+            )
+            for column, value in enumerate(values):
+                item = table.item(row_index, column)
+                if item is None:
+                    item = QTableWidgetItem()
+                    table.setItem(row_index, column, item)
+                item.setText(value)
+                if column == 0:
+                    item.setData(Qt.ItemDataRole.UserRole, host)
+
+    def _apply_orchestrator_connections(self, payload: dict) -> None:
+        table = self._orchestrator_connections_table
+        if table is None or not isinstance(payload, dict):
+            return
+        items = payload.get("connections") if isinstance(payload.get("connections"), list) else []
+        rows = [item for item in items if isinstance(item, dict)][::-1][:150]
+        table.setRowCount(len(rows))
+        for row_index, item in enumerate(rows):
+            host = str(item.get("hostname") or item.get("remote_address") or "—")
+            remote = f"{item.get('remote_address', '')}:{item.get('remote_port', '')}"
+            values = (
+                self._format_orchestrator_ts(item.get("ts")),
+                str(item.get("process") or f"PID {item.get('pid', '?')}"),
+                host,
+                remote,
+                self._verdict_title(str(item.get("verdict") or "unknown")),
+            )
+            for column, value in enumerate(values):
+                cell = table.item(row_index, column)
+                if cell is None:
+                    cell = QTableWidgetItem()
+                    table.setItem(row_index, column, cell)
+                cell.setText(value)
+
+    def _apply_orchestrator_action(self, action: str, payload: dict) -> None:
+        if not isinstance(payload, dict):
+            payload = {}
+        ok = bool(payload.get("ok", True))
+        if action == "orchestrator_snapshot":
+            self._apply_orchestrator_snapshot(payload)
+            return
+        if action == "orchestrator_connections":
+            self._apply_orchestrator_connections(payload)
+            return
+        if action == "orchestrator_probe":
+            self._orchestrator_probe_pending = False
+            host = str(payload.get("host") or "")
+            rule = payload.get("rule") if isinstance(payload.get("rule"), dict) else {}
+            decision = payload.get("decision") if isinstance(payload.get("decision"), dict) else {}
+            recipe = str(rule.get("recipe") or decision.get("recipe") or "").strip()
+            if self._orchestrator_status_label is not None:
+                if str(payload.get("error") or ""):
+                    text = self._t(
+                        "Не удалось проверить {host}: {error}",
+                        "Could not probe {host}: {error}",
+                    ).format(host=host or "—", error=str(payload.get("error") or "")[:180])
+                elif recipe:
+                    text = self._t(
+                        "Для {host} подобрана стратегия {recipe}.",
+                        "Picked strategy {recipe} for {host}.",
+                    ).format(host=host, recipe=recipe)
+                elif str(decision.get("action") or "") == "route_proxy":
+                    text = self._t(
+                        "Для {host} обход не найден; рекомендуется прокси.",
+                        "No bypass found for {host}; proxy is recommended.",
+                    ).format(host=host or "—")
+                else:
+                    text = self._t("Проверка {host} завершена.", "Probe for {host} finished.").format(host=host or "—")
+                self._orchestrator_status_label.setText(text)
+            self._mark_dirty("orchestrator")
+            return
+        if action == "orchestrator_pin":
+            rule = payload.get("rule") if isinstance(payload.get("rule"), dict) else {}
+            host = str(payload.get("host") or rule.get("host") or "")
+            if self._orchestrator_status_label is not None:
+                if not ok:
+                    text = self._t("Не удалось закрепить правило", "Could not pin the rule")
+                else:
+                    text = self._t(
+                        "Закреплено: {host} → {recipe}",
+                        "Pinned: {host} → {recipe}",
+                    ).format(host=host or "—", recipe=str(rule.get("recipe") or "—"))
+                self._orchestrator_status_label.setText(text)
+            self._mark_dirty("orchestrator")
+            return
+        if action == "orchestrator_apply":
+            count = int(payload.get("count", 0) or 0)
+            pending = bool(payload.get("pending_restart", False))
+            if self._orchestrator_status_label is not None:
+                if not ok:
+                    text = self._t("Не удалось применить правила", "Could not apply the rules")
+                elif pending:
+                    text = self._t(
+                        "Правил записано: {count}; winws перезапустится автоматически.",
+                        "{count} rule(s) written; winws will restart automatically.",
+                    ).format(count=count)
+                else:
+                    text = self._t("Правил записано: {count}.", "{count} rule(s) written.").format(count=count)
+                self._orchestrator_status_label.setText(text)
+            self._mark_dirty("orchestrator")
+            return
+        if action == "orchestrator_mode" and not ok and self._orchestrator_status_label is not None:
+            self._orchestrator_status_label.setText(self._t("Не удалось сменить режим", "Could not change mode"))
+        self._mark_dirty("orchestrator")
+
+    def _selected_orchestrator_host(self) -> str:
+        table = self._orchestrator_rules_table
+        if table is None:
+            return ""
+        row = table.currentRow()
+        if row < 0:
+            return ""
+        item = table.item(row, 0)
+        if item is None:
+            return ""
+        value = item.data(Qt.ItemDataRole.UserRole)
+        return str(value or item.text() or "").strip()
+
+    def _probe_selected_orchestrator_host(self) -> None:
+        host = self._selected_orchestrator_host()
+        if not host:
+            if self._orchestrator_status_label is not None:
+                self._orchestrator_status_label.setText(self._t("Выберите домен в таблице.", "Select a domain in the table."))
+            return
+        if self._orchestrator_probe_pending or self.context.backend is None:
+            return
+        self._orchestrator_probe_pending = True
+        if self._orchestrator_status_label is not None:
+            self._orchestrator_status_label.setText(self._t("Проверяю {host}…", "Probing {host}…").format(host=host))
+        try:
+            # Full healing may take a minute: it probes the baseline and then
+            # tries the recipe catalog. The backend worker stays busy but the
+            # UI itself remains responsive.
+            self._submit_backend_task(
+                "orchestrator_probe",
+                {"host": host, "trials": True},
+                action_id="__orch_probe__",
+            )
+        except Exception as error:
+            self._orchestrator_probe_pending = False
+            self.context.logging.log("warning", "orchestrator_probe_failed", host=host, error=str(error))
+
+    def _forget_selected_orchestrator_host(self) -> None:
+        host = self._selected_orchestrator_host()
+        if not host or self.context.backend is None:
+            if not host and self._orchestrator_status_label is not None:
+                self._orchestrator_status_label.setText(self._t("Выберите домен в таблице.", "Select a domain in the table."))
+            return
+        try:
+            self._submit_backend_task("orchestrator_forget", {"host": host}, action_id="__orch_forget__")
+        except Exception as error:
+            self.context.logging.log("warning", "orchestrator_forget_failed", host=host, error=str(error))
+
+    def _selected_orchestrator_recipe(self) -> str:
+        table = self._orchestrator_rules_table
+        if table is None:
+            return ""
+        row = table.currentRow()
+        if row < 0:
+            return ""
+        item = table.item(row, 2)
+        if item is None:
+            return ""
+        value = item.text().strip()
+        return "" if value in {"", "—", "-"} else value
+
+    def _pin_selected_orchestrator_host(self) -> None:
+        host = self._selected_orchestrator_host()
+        recipe = self._selected_orchestrator_recipe()
+        if not host or not recipe or self.context.backend is None:
+            if self._orchestrator_status_label is not None:
+                self._orchestrator_status_label.setText(
+                    self._t(
+                        "Выберите домен со стратегией, чтобы закрепить её.",
+                        "Select a domain with a strategy to pin it.",
+                    )
+                )
+            return
+        try:
+            self._submit_backend_task(
+                "orchestrator_pin",
+                {"host": host, "recipe": recipe, "mode": "desync"},
+                action_id="__orch_pin__",
+            )
+        except Exception as error:
+            self.context.logging.log("warning", "orchestrator_pin_failed", host=host, error=str(error))
+
+    def _apply_orchestrator_rules(self) -> None:
+        if self.context.backend is None:
+            return
+        if self._orchestrator_status_label is not None:
+            self._orchestrator_status_label.setText(self._t("Применяю правила…", "Applying rules…"))
+        try:
+            self._submit_backend_task("orchestrator_apply", action_id="__orch_apply__")
+        except Exception as error:
+            self.context.logging.log("warning", "orchestrator_apply_failed", error=str(error))
+
     def _build_files_page(self) -> QWidget:
         page = QWidget()
         page.setProperty("class", "pageRoot")
@@ -8392,7 +9225,7 @@ class MainWindow(QMainWindow):
         timer.start()
 
     def _flush_settings_save_from_components(self) -> None:
-        page = self.pages.widget(3) if self.pages.count() > 3 else None
+        page = self.pages.widget(4) if self.pages.count() > 4 else None
         if page is None:
             return
         try:
@@ -8403,7 +9236,7 @@ class MainWindow(QMainWindow):
     def _components_settings_ctrl(self) -> dict | None:
         if not hasattr(self, "pages"):
             return None
-        page = self.pages.widget(3) if self.pages.count() > 3 else None
+        page = self.pages.widget(4) if self.pages.count() > 4 else None
         if page is None:
             return None
         ctrl = getattr(page, "_settings_ctrl", None)
@@ -8892,7 +9725,7 @@ class MainWindow(QMainWindow):
     def _sync_settings_components_if_visible(self) -> None:
         if not self._showing_components_settings_tab():
             return
-        if hasattr(self, "pages") and self.pages.currentIndex() == 3:
+        if hasattr(self, "pages") and self.pages.currentIndex() == 4:
             self._sync_component_card_layout()
             QTimer.singleShot(0, self._sync_component_card_layout)
             try:
@@ -8901,7 +9734,7 @@ class MainWindow(QMainWindow):
                 pass
 
     def _reload_settings_page(self) -> None:
-        page = self.pages.widget(3) if self.pages.count() > 3 else None
+        page = self.pages.widget(4) if self.pages.count() > 4 else None
         if page is None:
             return
         ctrl = getattr(page, "_settings_ctrl", {})
@@ -9634,6 +10467,16 @@ class MainWindow(QMainWindow):
                 threading.Thread(target=self.context.processes.stop_all, daemon=True).start()
         except Exception:
             pass
+        try:
+            self._stop_orchestrator_refresh()
+        except Exception:
+            pass
+        bridge = getattr(self.context, "orchestrator", None)
+        if bridge is not None:
+            try:
+                threading.Thread(target=bridge.shutdown_sidecar, daemon=True).start()
+            except Exception:
+                pass
         if hasattr(self, "tray_icon") and self.tray_icon is not None:
             try:
                 self.tray_icon.hide()
@@ -9778,8 +10621,12 @@ class MainWindow(QMainWindow):
                 self.refresh_dashboard()
                 self._sync_power_aura_geometry()
             elif index == 3:
+                self._start_orchestrator_refresh()
+            elif index == 4:
                 self._reload_settings_page()
                 self.refresh_dashboard()
+            if index != 3:
+                self._stop_orchestrator_refresh()
             self._animate_glow_for_page(index)
             if index != self.pages.currentIndex():
                 self._prepare_page_geometry_for_index(index)
@@ -9796,6 +10643,7 @@ class MainWindow(QMainWindow):
                 0: "dashboard",
                 1: "services",
                 2: "mods",
+                3: "orchestrator",
             }
             section = section_map.get(index)
             if section:
@@ -9818,7 +10666,8 @@ class MainWindow(QMainWindow):
         0: (0.50, 0.50),
         1: (0.80, 0.15),
         2: (0.15, 0.80),
-        3: (0.50, 0.85),
+        3: (0.85, 0.50),
+        4: (0.50, 0.85),
     }
 
     def _animate_glow_for_page(self, index: int) -> None:
@@ -9897,7 +10746,7 @@ class MainWindow(QMainWindow):
                 self.refresh_services()
             elif self.pages.currentIndex() == 2:
                 self._sync_mod_card_layout()
-            elif self.pages.currentIndex() == 3:
+            elif self.pages.currentIndex() == 4:
                 self._sync_settings_components_if_visible()
                 self._schedule_files_page_geometry()
             self._page_transition_running = False
@@ -10041,14 +10890,14 @@ class MainWindow(QMainWindow):
     def _rebuild_settings_page(self) -> None:
         if not hasattr(self, "pages"):
             return
-        old = self.pages.widget(3)
+        old = self.pages.widget(4)
         if old is None:
             return
         was_current = self.pages.currentWidget() is old
         self.pages.removeWidget(old)
         old.deleteLater()
         new_page = self._build_settings_page()
-        self.pages.insertWidget(3, new_page)
+        self.pages.insertWidget(4, new_page)
         if was_current:
             self.pages.setCurrentWidget(new_page)
             self._sync_nav_highlight(animated=True)
@@ -10065,6 +10914,9 @@ class MainWindow(QMainWindow):
             self.refresh_mods()
             self._sync_mod_card_layout()
         elif current_index == 3:
+            self._apply_orchestrator_theme()
+            self._refresh_orchestrator(force=True)
+        elif current_index == 4:
             self._reload_settings_page()
             self._sync_settings_components_if_visible()
 
@@ -10171,6 +11023,9 @@ class MainWindow(QMainWindow):
         self._set_zapret_restart_active(False, task_id=task_id)
         task_gen = self._task_generation.pop(task_id, 0)
         payload = message.get("payload", {})
+        if action.startswith("orchestrator_"):
+            self._apply_orchestrator_action(action, payload)
+            return
         service_response_revision = 0
         settings_response_revision = 0
         if action == "set_selected_services" and isinstance(payload, dict):
@@ -10364,7 +11219,7 @@ class MainWindow(QMainWindow):
         if action == "load_components_payload":
             if isinstance(payload, dict):
                 self._page_payload_cache["components"] = payload
-                if self.pages.currentIndex() == 3 and self._showing_components_settings_tab():
+                if self.pages.currentIndex() == 4 and self._showing_components_settings_tab():
                     self.refresh_components(payload)
             return
         if action == "write_file_text":
@@ -10504,6 +11359,14 @@ class MainWindow(QMainWindow):
         source = self._backend_error_source(action, str(message.get("source", "") or ""))
         raw_error = str(message.get("error", self._t("Unknown error.")))
         error = self._friendly_backend_error(raw_error, source=source, action=action)
+        if action.startswith("orchestrator_"):
+            self._orchestrator_refresh_pending = False
+            if action == "orchestrator_probe":
+                self._orchestrator_probe_pending = False
+            if self._orchestrator_status_label is not None:
+                self._orchestrator_status_label.setText(self._t("Оркестратор недоступен", "Orchestrator is unavailable"))
+            self.context.logging.log("warning", "orchestrator_task_failed", action=action, error=error)
+            return
         if action == "load_startup_snapshot":
             self.context.logging.log("error", "startup_snapshot_failed", error=error)
             self._ensure_local_runtime_snapshot()
@@ -11131,6 +11994,7 @@ class MainWindow(QMainWindow):
             self._t("Dashboard"),
             self._t("Services"),
             self._t("Mods"),
+            self._t("Orchestrator"),
             self._t("Settings"),
         ]
         for index, btn in enumerate(self._nav_buttons):
@@ -13928,7 +14792,7 @@ class MainWindow(QMainWindow):
             self._show_error(self._t("Files"), f"{self._t('Failed to rename file')}:\n{error}")
 
     def schedule_refresh_all(self) -> None:
-        self._refresh_dirty_sections.update({"dashboard", "services", "components", "mods", "files", "logs", "tray"})
+        self._refresh_dirty_sections.update({"dashboard", "services", "components", "mods", "orchestrator", "files", "logs", "tray"})
         self._schedule_dirty_refresh()
 
     def _mark_dirty(self, *sections: str) -> None:
@@ -13974,6 +14838,11 @@ class MainWindow(QMainWindow):
         if "mods" in dirty:
             try:
                 self.refresh_mods()
+            except Exception:
+                pass
+        if "orchestrator" in dirty:
+            try:
+                self._refresh_orchestrator()
             except Exception:
                 pass
         if "files" in dirty:

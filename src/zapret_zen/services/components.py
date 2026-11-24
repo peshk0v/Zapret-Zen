@@ -174,6 +174,7 @@ class ProcessManager:
         self._log_streams: dict[str, Any] = {}
         self._telegram_proxy_launch_info: dict[str, Any] | None = None
         self._diagnostic_runtime_override = False
+        self._orchestrator_probe_lane: tuple[int, int] | None = None
         self._job = _WindowsJob() if sys.platform.startswith("win") else None
         self.github = GitHubNetworkClient(logging, recovery_runner=self.with_github_connectivity_recovery)
         self._creationflags = 0
@@ -566,6 +567,7 @@ class ProcessManager:
             winws_command = self._extract_winws_command(active_script, bin_dir=bin_dir, lists_dir=lists_dir)
             winws_command = self._apply_selected_service_command_extensions(winws_command, lists_dir=lists_dir)
             winws_command = self._apply_vpn_priority_to_command(winws_command, lists_dir=lists_dir)
+            winws_command = self._apply_orchestrator_overrides(winws_command, lists_dir=lists_dir)
             if not winws_command:
                 state = ComponentState(
                     component_id=component_id,
@@ -698,6 +700,7 @@ class ProcessManager:
             winws_command = self._extract_winws_command(active_script, bin_dir=bin_dir, lists_dir=lists_dir)
             winws_command = self._apply_selected_service_command_extensions(winws_command, lists_dir=lists_dir)
             winws_command = self._apply_vpn_priority_to_command(winws_command, lists_dir=lists_dir)
+            winws_command = self._apply_orchestrator_overrides(winws_command, lists_dir=lists_dir)
             if not winws_command:
                 state = ComponentState(
                     component_id=component_id,
@@ -1765,6 +1768,240 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
         if not path.exists():
             return []
         return [raw.rstrip() for raw in path.read_text(encoding="utf-8", errors="ignore").splitlines()]
+
+    def set_orchestrator_probe_lane(self, lane: tuple[int, int] | None) -> None:
+        if lane is None:
+            self._orchestrator_probe_lane = None
+            return
+        try:
+            start, end = int(lane[0]), int(lane[1])
+        except (TypeError, ValueError, IndexError):
+            self._orchestrator_probe_lane = None
+            return
+        self._orchestrator_probe_lane = (start, end) if 1 <= start <= end <= 65535 else None
+
+    _ORCHESTRATOR_GLOBAL_PREFIXES = (
+        "--blob=",
+        "--lua-init=",
+        "--wf-",
+        "--ipcache-",
+        "--ctrack-",
+        "--debug",
+    )
+
+    @classmethod
+    def _split_general_globals(cls, head: list[str]) -> tuple[list[str], list[str]]:
+        """Split the part before the first ``--new`` into globals and profile args.
+
+        Presets put machine-wide keys (``--wf-tcp``/``--wf-udp``) and the first
+        desync profile in the same leading block.  Only the globals may move,
+        otherwise the first profile would lose its filter.
+        """
+        globals_: list[str] = []
+        profile: list[str] = []
+        for argument in head:
+            lowered = str(argument).lower()
+            if any(lowered.startswith(prefix) for prefix in cls._ORCHESTRATOR_GLOBAL_PREFIXES):
+                globals_.append(argument)
+            else:
+                profile.append(argument)
+        return globals_, profile
+
+    @staticmethod
+    def _merge_raw_part(command: list[str], part: str) -> None:
+        """AND the probe-lane exclusion into an existing ``--wf-raw-part``.
+
+        VPN priority already may have added a raw filter.  Two raw parts are
+        not guaranteed to combine, so they are merged into one expression.
+        """
+        for index, argument in enumerate(command):
+            if not argument.startswith("--wf-raw-part="):
+                continue
+            existing = argument.split("=", 1)[1].strip()
+            if existing.startswith('"') and existing.endswith('"') and len(existing) >= 2:
+                existing = existing[1:-1]
+            command[index] = (
+                f"--wf-raw-part=({existing}) and ({part})" if existing else f"--wf-raw-part={part}"
+            )
+            return
+        # ``--wf-*`` keys are machine-wide, but the reference implementation
+        # keeps every global before the first profile, so the new key goes to
+        # the front of the argument stream instead of trailing the last one.
+        command.insert(0, f"--wf-raw-part={part}")
+
+    @staticmethod
+    def _ensure_wf_tcp_ports(command: list[str], ports: tuple[int, ...]) -> None:
+        """Make sure the per-domain ports are captured by the global filter."""
+        for index, argument in enumerate(command):
+            if not argument.startswith("--wf-tcp="):
+                continue
+            values = [item.strip() for item in argument.split("=", 1)[1].split(",") if item.strip()]
+            changed = False
+            for port in ports:
+                if str(port) not in values:
+                    values.append(str(port))
+                    changed = True
+            if changed:
+                command[index] = "--wf-tcp=" + ",".join(values)
+            return
+
+    @staticmethod
+    def _ensure_wf_udp_ports(command: list[str], ports: tuple[int, ...]) -> None:
+        """Mirror of :meth:`_ensure_wf_tcp_ports` for the QUIC profiles.
+
+        When the preset has no ``--wf-udp`` at all, winws never inspects UDP
+        packets and the QUIC profile would be dead code, so the key is added
+        (at the front, next to the other globals).
+        """
+        for index, argument in enumerate(command):
+            if not argument.startswith("--wf-udp="):
+                continue
+            values = [item.strip() for item in argument.split("=", 1)[1].split(",") if item.strip()]
+            changed = False
+            for port in ports:
+                if str(port) not in values:
+                    values.append(str(port))
+                    changed = True
+            if changed:
+                command[index] = "--wf-udp=" + ",".join(values)
+            return
+        command.insert(0, "--wf-udp=" + ",".join(str(port) for port in ports))
+
+    @staticmethod
+    def _resolve_bin_placeholder(args: list[str], executable: str) -> list[str]:
+        """Replace the ``{bin}`` token with the directory of ``winws.exe``.
+
+        QUIC recipes reference ``quic_initial_*.bin`` patterns that ship next to
+        the engine.  The orchestrator cannot know that path when it writes the
+        overlay, so the placeholder is resolved here, where the executable is
+        known.
+        """
+        try:
+            bin_dir = str(Path(executable).parent)
+        except (TypeError, ValueError):
+            return args
+        return [arg.replace("{bin}", bin_dir) for arg in args]
+
+    def _apply_orchestrator_overrides(self, command: list[str], *, lists_dir: Path) -> list[str]:
+        if not command:
+            return command
+        try:
+            from zapret_zen.orchestrator.adapters.applier_winws import read_overrides
+
+            override_path = self.storage.paths.data_dir / "orchestrator" / "overrides.json"
+            payload = read_overrides(override_path)
+        except Exception as error:
+            self.logging.log("warning", "Failed to read orchestrator overrides", error=str(error))
+            return command
+        if not payload or not payload.get("enabled"):
+            return command
+
+        updated = list(command)
+        # The first element is the winws.exe path, never an argument: a stray
+        # "--new" must not be able to split it into the argument stream.
+        executable = updated[0]
+        arguments = updated[1:]
+
+        lane = payload.get("probe_lane") or self._orchestrator_probe_lane
+        if isinstance(lane, (list, tuple)) and len(lane) == 2:
+            try:
+                start, end = max(1, int(lane[0])), min(65535, int(lane[1]))
+            except (TypeError, ValueError):
+                start, end = 0, -1
+            if 1 <= start <= end <= 65535:
+                # Both directions: the production engine must not see the
+                # probe flow at all, including the server's replies.
+                part = (
+                    f"((tcp.SrcPort<{start} or tcp.SrcPort>{end})"
+                    f" and (tcp.DstPort<{start} or tcp.DstPort>{end}))"
+                )
+                self._merge_raw_part(arguments, part)
+
+        sections = payload.get("sections")
+        if not isinstance(sections, list) or not sections:
+            return [executable, *arguments]
+
+        profiles: list[list[str]] = []
+        udp_profiles: list[list[str]] = []
+        applied = 0
+        quic_applied = 0
+        exclude_args: list[str] = []
+        for name in ("list-exclude.txt", "list-exclude-user.txt"):
+            path = Path(lists_dir) / name
+            try:
+                if path.is_file() and path.read_text(encoding="utf-8", errors="ignore").strip():
+                    exclude_args.append(f"--hostlist-exclude={path}")
+            except OSError:
+                continue
+        for section in sections:
+            if not isinstance(section, dict):
+                continue
+            hostlist = str(section.get("hostlist") or "").strip()
+            if not hostlist:
+                continue
+            args = section.get("args")
+            if not isinstance(args, list) or not args:
+                continue
+            # TCP profiles desync the TLS ClientHello on 80/443; QUIC profiles
+            # desync the Initial on UDP/443.  Both must be matched *before* the
+            # preset's own filters, otherwise the preset's catch-all hostlist
+            # wins and the per-domain strategy is dead code.
+            if str(section.get("transport") or "tcp").lower() == "udp":
+                udp_profiles.append([
+                    "--filter-udp=443",
+                    f"--hostlist={hostlist}",
+                    *exclude_args,
+                    *self._resolve_bin_placeholder([str(arg) for arg in args if str(arg).strip()], executable),
+                ])
+                quic_applied += 1
+            else:
+                profiles.append([
+                    "--filter-tcp=80,443",
+                    f"--hostlist={hostlist}",
+                    *exclude_args,
+                    *self._resolve_bin_placeholder([str(arg) for arg in args if str(arg).strip()], executable),
+                ])
+            applied += 1
+        profiles.extend(udp_profiles)
+        if not profiles:
+            return [executable, *arguments]
+
+        # winws hands a packet to the first profile whose filter matched and
+        # never looks further.  Appending our profiles after the preset would
+        # make them dead code for every name the preset already captures, so
+        # they are inserted right after the global keys and before the preset
+        # sections - same ordering rule as the reference implementation.
+        #
+        # The first inserted profile deliberately shares the leading block with
+        # the global keys instead of starting a new one: a "--new" right after
+        # the globals would create an empty profile that matches every packet
+        # and swallows the traffic before any desync step runs.
+        blocks: list[list[str]] = [[]]
+        for argument in arguments:
+            if argument == "--new":
+                blocks.append([])
+            else:
+                blocks[-1].append(argument)
+        head = blocks[0] if blocks else []
+        globals_, first_profile = self._split_general_globals(head)
+        self._ensure_wf_tcp_ports(globals_, (80, 443))
+        if quic_applied:
+            self._ensure_wf_udp_ports(globals_, (443,))
+        rebuilt: list[str] = [*globals_, *profiles[0]]
+        for profile in profiles[1:]:
+            rebuilt.extend(["--new", *profile])
+        if first_profile:
+            rebuilt.extend(["--new", *first_profile])
+        for block in blocks[1:]:
+            if block:
+                rebuilt.extend(["--new", *block])
+        self.logging.log(
+            "info",
+            "Applied orchestrator per-domain overrides",
+            sections=applied,
+            quic=quic_applied,
+        )
+        return [executable, *rebuilt]
 
     def _apply_selected_service_command_extensions(self, command: list[str], *, lists_dir: Path) -> list[str]:
         if not command:

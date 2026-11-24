@@ -1,0 +1,2 @@
+[console_scripts]
+zapret-zen = zapret_zen.main:main
