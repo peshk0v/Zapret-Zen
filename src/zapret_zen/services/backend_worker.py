@@ -30,6 +30,10 @@ from zapret_zen.services.tg_proxy_tuner import (
     probe_direct,
 )
 
+# A failed overlay restart must not be retried forever: every retry stops and
+# restarts winws, so an unbounded loop would keep zapret down permanently.
+_ORCHESTRATOR_RESTART_MAX_FAILURES = 5
+
 def _snapshot(context) -> dict[str, Any]:
     settings = context.settings.get()
     return {
@@ -263,6 +267,7 @@ def _worker_main(task_queue, result_queue) -> None:
     except Exception:
         pass
     last_orchestrator_check = 0.0
+    orchestrator_restart_failures = 0
     while True:
         try:
             task = task_queue.get(timeout=1.0)
@@ -271,22 +276,60 @@ def _worker_main(task_queue, result_queue) -> None:
         now = time.monotonic()
         if now - last_orchestrator_check >= 1.0:
             last_orchestrator_check = now
+            bridge = getattr(context, "orchestrator", None)
             try:
-                bridge = getattr(context, "orchestrator", None)
                 restart = bridge.poll_restart() if bridge is not None else {"needed": False}
-                if restart.get("needed"):
+            except Exception as error:
+                restart = {"needed": False}
+                try:
+                    context.logging.log("warning", "Orchestrator restart poll failed", error=str(error))
+                except Exception:
+                    pass
+            if restart.get("needed"):
+                was_running = False
+                try:
                     states = {item.component_id: item for item in context.processes.list_states()}
-                    if states.get("zapret") and states["zapret"].status == "running":
+                    was_running = bool(states.get("zapret") and states["zapret"].status == "running")
+                    if was_running:
                         context.logging.log("info", "Applying orchestrator rules", sections=restart.get("sections"))
                         _restart_zapret_if_running(context)
                     else:
                         context.processes.rebuild_zapret_runtime_snapshot()
-                    bridge.mark_restart_done()
-            except Exception as error:
-                try:
-                    context.logging.log("warning", "Orchestrator restart check failed", error=str(error))
-                except Exception:
-                    pass
+                    orchestrator_restart_failures = 0
+                except Exception as error:
+                    orchestrator_restart_failures += 1
+                    try:
+                        context.logging.log(
+                            "warning",
+                            "Orchestrator restart check failed",
+                            error=str(error),
+                            attempt=orchestrator_restart_failures,
+                        )
+                    except Exception:
+                        pass
+                    # A restart that dies between "stop" and "start" must not
+                    # leave zapret switched off: bring it back right away.
+                    if was_running:
+                        try:
+                            states = {item.component_id: item for item in context.processes.list_states()}
+                            if not (states.get("zapret") and states["zapret"].status == "running"):
+                                context.processes.start_component("zapret")
+                                orchestrator_restart_failures = 0
+                        except Exception:
+                            pass
+                    # Do not spin on a permanently failing overlay: give up
+                    # after a few attempts instead of stopping winws forever.
+                    if orchestrator_restart_failures >= _ORCHESTRATOR_RESTART_MAX_FAILURES:
+                        orchestrator_restart_failures = 0
+                        try:
+                            bridge.mark_restart_done()
+                        except Exception:
+                            pass
+                else:
+                    try:
+                        bridge.mark_restart_done()
+                    except Exception:
+                        pass
         if not isinstance(task, dict):
             continue
         action = str(task.get("action", ""))

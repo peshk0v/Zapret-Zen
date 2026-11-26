@@ -4,6 +4,7 @@ import re
 import shutil
 import sys
 import ctypes
+import time
 from pathlib import Path
 from typing import Any
 
@@ -130,10 +131,24 @@ class ZapretRuntimeBuilder:
                     _strip_zone_identifier(dest)
 
     def _materialize_visible_merged_runtime(self, active_root: Path) -> None:
+        """Copies the runtime to ``merged_runtime/zapret`` so the user can browse it.
+
+        The copy is purely cosmetic: a file locked by a running ``winws.exe`` or
+        by the loaded WinDivert driver must never abort the real start, so this
+        retries briefly and then gives up with a warning instead of raising.
+        """
         target_root = self.storage.paths.merged_runtime_dir / "zapret"
-        if target_root.exists():
-            shutil.rmtree(target_root, ignore_errors=True)
-        shutil.copytree(active_root, target_root, dirs_exist_ok=True, ignore=self._runtime_copy_ignore)
+        last_error: OSError | None = None
+        for attempt in range(4):
+            try:
+                if target_root.exists():
+                    shutil.rmtree(target_root, ignore_errors=True)
+                shutil.copytree(active_root, target_root, dirs_exist_ok=True, ignore=self._runtime_copy_ignore)
+                return
+            except OSError as error:
+                last_error = error
+                time.sleep(0.35 * (attempt + 1))
+        self.logging.log("warning", "Visible zapret runtime copy skipped", error=str(last_error))
 
     def _runtime_copy_ignore(self, directory: str, names: list[str]) -> set[str]:
         ignored_names = {".git", ".github", "__pycache__", ".mypy_cache", ".pytest_cache"}

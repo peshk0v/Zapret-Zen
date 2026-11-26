@@ -196,7 +196,7 @@ class OrchestratorClient:
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             startupinfo.wShowWindow = 0
         try:
-            self._process = subprocess.Popen(
+            spawned = subprocess.Popen(
                 command,
                 cwd=str(self.install_root),
                 env=env,
@@ -210,8 +210,31 @@ class OrchestratorClient:
         except OSError as error:
             self.last_error = f"cannot spawn orchestrator sidecar: {error}"
             return False
+        self._process = spawned
         self._last_spawn_at = now
+        self._log_spawn(spawned, command, flags)
         return True
+
+    def _log_spawn(self, process: subprocess.Popen[Any], command: list[str], flags: int) -> None:
+        """Appends pid + creation flags of the spawned sidecar.
+
+        Kept as a breadcrumb: a stray console window was once blamed on this
+        spawn, and the pid plus the exact ``creationflags`` are what is needed
+        to prove or disprove it after the fact.
+        """
+        try:
+            log_dir = self.data_dir / "orchestrator"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            line = (
+                f"[{stamp}] spawned pid={process.pid} flags=0x{flags:X} "
+                f"parent_pid={os.getpid()} cwd={self.install_root} "
+                f"cmd={' '.join(command)}\n"
+            )
+            with (log_dir / "spawn.log").open("a", encoding="utf-8") as stream:
+                stream.write(line)
+        except Exception:
+            pass
 
     def _build_command(self) -> list[str]:
         arguments = [

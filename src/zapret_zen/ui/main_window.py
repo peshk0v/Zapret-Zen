@@ -4803,9 +4803,11 @@ class MainWindow(QMainWindow):
         ]
 
         if isinstance(startup_snapshot, dict):
+            # The snapshot already carries fresh components/states; dropping it
+            # right after seeding would leave `_startup_snapshot_ready=True`
+            # with empty caches, so the dashboard would render "off" while the
+            # backend still sees running components.
             self._seed_startup_snapshot(startup_snapshot)
-            self._component_states_cache = {}
-            self._component_defs_cache = {}
 
         # Окно изменяемого размера: минимальный размер берётся с учётом
         # вложенных layout'ов (строка оформления ~638px + поля страниц),
@@ -4862,8 +4864,13 @@ class MainWindow(QMainWindow):
         self._ensure_local_runtime_snapshot()
         self.refresh_dashboard()
         self._sync_power_aura_geometry()
-        if not self._startup_snapshot_ready:
-            QTimer.singleShot(0, lambda: self._submit_backend_task("load_startup_snapshot", action_id="__startup_snapshot__"))
+        # Always pull a fresh snapshot from the worker. The bootstrap one is
+        # captured before the queued `start_enabled_components` autostart task
+        # runs, and `_ensure_local_runtime_snapshot` refuses to overwrite
+        # non-empty caches — without this the dashboard keeps showing pre-start
+        # states ("off") while the backend sees running components and stops
+        # them on the next power press.
+        QTimer.singleShot(0, lambda: self._submit_backend_task("load_startup_snapshot", action_id="__startup_snapshot__"))
 
     def _themed_icon_color(self, filename: str) -> QColor | None:
         if filename not in {"power.svg", "share.svg", "trash.svg", "search.svg", "refresh.svg", "external.svg", "vpn.svg", "vpn.png"}:
@@ -4991,9 +4998,13 @@ class MainWindow(QMainWindow):
         return icon
 
     def _component_defs(self) -> dict[str, ComponentDefinition]:
-        if self._component_defs_cache:
-            return dict(self._component_defs_cache)
-        return {}
+        if not self._component_defs_cache:
+            # Fill from the local ProcessManager instead of answering with an
+            # empty dict: an empty defs cache makes `_master_active_components`
+            # return [], so the dashboard shows "off" and the power toggle
+            # computes the opposite direction from the backend worker.
+            self._ensure_local_runtime_snapshot()
+        return dict(self._component_defs_cache)
 
     def _seed_startup_snapshot(self, payload: dict[str, object]) -> None:
         self._update_runtime_snapshot_from_payload(payload)
@@ -5257,9 +5268,11 @@ class MainWindow(QMainWindow):
             self._relayout_onboarding_content()
 
     def _component_states(self) -> dict[str, ComponentState]:
-        if self._component_states_cache:
-            return dict(self._component_states_cache)
-        return {}
+        if not self._component_states_cache:
+            # Same reasoning as `_component_defs`: never render from an empty
+            # cache while `_startup_snapshot_ready` is already True.
+            self._ensure_local_runtime_snapshot()
+        return dict(self._component_states_cache)
 
     def _ensure_local_runtime_snapshot(self) -> None:
         try:
@@ -12907,18 +12920,35 @@ class MainWindow(QMainWindow):
         self._submit_backend_task("toggle_master_runtime")
 
     def _auto_restart_partial(self) -> None:
-        if self._toggle_in_progress or not self._startup_snapshot_ready:
+        if self._toggle_in_progress or self._autostart_in_progress or not self._startup_snapshot_ready:
             return
         if self._partial_restart_count >= 3:
+            return
+        if self.context.backend is None:
             return
         states = self._component_states()
         active_ids = self._master_active_components()
         running_ids = {cid for cid in active_ids if states.get(cid) and states[cid].status == "running"}
-        if running_ids and len(running_ids) < len(active_ids):
-            self._partial_restart_count += 1
-            self._component_states_cache = {}
-            self._ensure_local_runtime_snapshot()
-            self._mark_dirty("dashboard", "components", "tray")
+        if not running_ids or len(running_ids) >= len(active_ids):
+            return
+        missing = [cid for cid in active_ids if cid not in running_ids]
+        self._partial_restart_count += 1
+        self.context.logging.log(
+            "info",
+            "Restarting components left in partial state",
+            missing=missing,
+            attempt=self._partial_restart_count,
+        )
+        self._component_states_cache = {}
+        self._ensure_local_runtime_snapshot()
+        self._mark_dirty("dashboard", "components", "tray")
+        # Re-reading state alone never fixed a partial run: the missing
+        # component has to be started again. `start_enabled_components` skips
+        # everything that is already running, so this is safe to repeat.
+        try:
+            self._submit_backend_task("start_enabled_components", action_id="start_enabled_components")
+        except Exception as error:
+            self.context.logging.log("warning", "Partial restart submit failed", error=str(error))
 
     def _toggle_master_runtime_worker(self) -> None:
         try:
@@ -15507,7 +15537,14 @@ class MainWindow(QMainWindow):
         self._submit_backend_task("set_favorite_generals", {"favorites": favorites}, action_id="__favorite__")
 
     def _master_active_components(self) -> list[str]:
-        return [c.id for c in self._component_defs().values() if c.enabled and c.id != "dns-manager"]
+        defs = self._component_defs()
+        if defs:
+            return [c.id for c in defs.values() if c.enabled and c.id != "dns-manager"]
+        # The defs cache can still be empty during startup; without this the
+        # list would be [], the dashboard would show "off" and a power press
+        # would be interpreted as "connect" while components are running.
+        enabled = set(self.context.settings.get().enabled_component_ids or [])
+        return sorted(enabled - {"dns-manager"})
 
     def _maybe_run_first_general_autotest(self) -> None:
         settings = self.context.settings.get()
@@ -16143,6 +16180,10 @@ class MainWindow(QMainWindow):
         overlay.setGeometry(QRect(top_left, self._onboarding_widget.size()))
         overlay.show()
         overlay.raise_()
+        # Make sure the caches are populated before flipping the readiness flag:
+        # `refresh_all()` below would otherwise render the power button from an
+        # empty snapshot.
+        self._ensure_local_runtime_snapshot()
         self._startup_snapshot_ready = True
         self._set_onboarding_visible(False)
         self._pump_isolated_profile_benchmark()

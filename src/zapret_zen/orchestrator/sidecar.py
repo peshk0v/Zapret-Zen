@@ -404,6 +404,21 @@ def _acquire_single_instance(pipe_name: str) -> object:
         return None
 
 
+def _detach_console() -> None:
+    """Makes sure the sidecar never owns a visible console window.
+
+    The client already spawns it with ``CREATE_NO_WINDOW|DETACHED_PROCESS``,
+    but a stray window was once observed anyway; detaching here covers every
+    other way this module can be started (``-m``, a shell, a wrapper script).
+    """
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        ctypes.windll.kernel32.FreeConsole()
+    except Exception:
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="zapret-zen-orchestrator", description="Zapret-Zen smart orchestrator sidecar")
     parser.add_argument("--install-root", default="", help="installation root (defaults to the current directory)")
@@ -414,6 +429,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed-host", action="append", default=[], help="host to probe even without traffic (repeatable)")
     parser.add_argument("--verbose", action="store_true", help="echo log lines to stderr")
     args, _unknown = parser.parse_known_args(argv)
+
+    if not args.verbose:
+        # `--verbose` keeps stderr alive to echo log lines, so only detach when
+        # nothing was asked from the console.
+        _detach_console()
 
     install_root = Path(args.install_root).resolve() if args.install_root else Path.cwd()
     data_dir = Path(args.data_dir).resolve() if args.data_dir else install_root / "data"

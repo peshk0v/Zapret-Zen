@@ -1608,10 +1608,8 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
                     shutil.copy2(source, target_dir / source.name)
 
     def _materialize_visible_merged_runtime(self, active_root: Path) -> None:
-        target_root = self.storage.paths.merged_runtime_dir / "zapret"
-        if target_root.exists():
-            shutil.rmtree(target_root, ignore_errors=True)
-        shutil.copytree(active_root, target_root, dirs_exist_ok=True, ignore=self._runtime_copy_ignore)
+        # Best-effort: see ZapretRuntimeBuilder._materialize_visible_merged_runtime.
+        self.runtime_builder._materialize_visible_merged_runtime(active_root)
 
     def _runtime_copy_ignore(self, directory: str, names: list[str]) -> set[str]:
         ignored_names = {".git", ".github", "__pycache__", ".mypy_cache", ".pytest_cache"}
@@ -2782,24 +2780,33 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
         return result
 
     def _rebuild_visible_zapret_runtime_snapshot(self) -> None:
-        selected = self._resolve_selected_general_option()
-        if selected is not None:
-            active_root = self._prepare_active_zapret_runtime(
-                selected_bundle_root=Path(selected["path"]).parent,
-                selected_bundle_id=str(selected.get("bundle_id", "")),
-                selected_script_name=Path(selected["path"]).name,
-            )
-            self._apply_zapret_runtime_switches(active_root)
-            self._ensure_zapret_user_lists(active_root / "lists")
-            self._materialize_visible_merged_runtime(active_root)
-            self._reset_active_runtime_dir(active_root)
-            return
-        base_root = self.storage.paths.runtime_dir / "zapret-discord-youtube"
-        if base_root.exists():
-            target_root = self.storage.paths.merged_runtime_dir / "zapret"
-            if target_root.exists():
-                shutil.rmtree(target_root, ignore_errors=True)
-            shutil.copytree(base_root, target_root, dirs_exist_ok=True, ignore=self._runtime_copy_ignore)
+        """Refreshes ``merged_runtime/zapret`` for the Files page.
+
+        Purely presentational, so it must never raise: a failure here would
+        otherwise abort ``_finish_zapret_reconfiguration`` before winws is
+        started again and leave zapret switched off.
+        """
+        try:
+            selected = self._resolve_selected_general_option()
+            if selected is not None:
+                active_root = self._prepare_active_zapret_runtime(
+                    selected_bundle_root=Path(selected["path"]).parent,
+                    selected_bundle_id=str(selected.get("bundle_id", "")),
+                    selected_script_name=Path(selected["path"]).name,
+                )
+                self._apply_zapret_runtime_switches(active_root)
+                self._ensure_zapret_user_lists(active_root / "lists")
+                self._materialize_visible_merged_runtime(active_root)
+                self._reset_active_runtime_dir(active_root)
+                return
+            base_root = self.storage.paths.runtime_dir / "zapret-discord-youtube"
+            if base_root.exists():
+                target_root = self.storage.paths.merged_runtime_dir / "zapret"
+                if target_root.exists():
+                    shutil.rmtree(target_root, ignore_errors=True)
+                shutil.copytree(base_root, target_root, dirs_exist_ok=True, ignore=self._runtime_copy_ignore)
+        except Exception as error:
+            self.logging.log("warning", "Visible zapret runtime rebuild skipped", error=str(error))
 
     def rebuild_zapret_runtime_snapshot(self) -> None:
         self._rebuild_visible_zapret_runtime_snapshot()
